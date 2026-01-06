@@ -51,6 +51,8 @@
       if (hex === LOCK_HASH) {
         markUnlocked(remember.checked);
         overlay.hidden = true;
+        const app = document.getElementById('app');
+        if (app) app.hidden = false;
         unlockResolve();
       } else {
         msg.textContent = 'Incorrect password';
@@ -63,10 +65,11 @@
   document.addEventListener('DOMContentLoaded', () => {
     if (unlocked()) {
       document.getElementById('lock')?.setAttribute('hidden', 'true');
+      const app = document.getElementById('app');
+      if (app) app.hidden = false;
       unlockResolve();
     } else {
       showLock();
     }
   });
 })();
-

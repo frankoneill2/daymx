@@ -7,7 +7,7 @@
     <link rel="stylesheet" href="src/styles.css" />
   </head>
   <body>
-    <div id="lock" class="lock-overlay" hidden>
+    <div id="lock" class="lock-overlay">
       <div class="lock-card">
         <div class="lock-title">DayMX</div>
         <div class="lock-sub">Enter password to continue</div>
@@ -19,6 +19,7 @@
         </form>
       </div>
     </div>
+    <div id="app" hidden>
     <header class="app-header">
       <div class="brand">DayMX</div>
       <nav class="tabs" role="tablist" aria-label="Modes">
@@ -64,6 +65,7 @@
         </div>
         <div id="modal-body" class="modal-body"></div>
       </div>
+    </div>
     </div>
 
     <script type="module" src="src/firebase-init.js"></script>
