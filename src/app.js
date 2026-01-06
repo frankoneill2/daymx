@@ -15,6 +15,40 @@ const defaultData = () => ({
 
 const store = {
   data: null,
+  mode: 'local', // 'local' | 'firebase'
+  unsub: null,
+  saveTimer: null,
+  async tryFirebase() {
+    try {
+      if (!window.daymxFirebase) return false;
+      await window.daymxFirebase.ready;
+      const json = await window.daymxFirebase.getData();
+      if (json && typeof json === 'object') {
+        this.data = json;
+      } else {
+        this.data = defaultData();
+        // Seed empty doc so subscription works
+        await window.daymxFirebase.setData(this.data);
+      }
+      this.mode = 'firebase';
+      // Subscribe to live updates
+      this.unsub = window.daymxFirebase.subscribe((remote) => {
+        if (!remote) return;
+        this.data = remote;
+        // Normalize and refresh UI on remote updates
+        (this.data.threads || []).forEach(normalizeNode);
+        autoAssignThreadColors();
+        recomputeIndexes();
+        renderThreads();
+        // If review is visible, refresh progress/card state
+        if (!$('#review-stage').hidden) { renderProgress(); renderStoryCard(); }
+      });
+      return true;
+    } catch (e) {
+      console.warn('Firebase init failed, falling back to local', e);
+      return false;
+    }
+  },
   load() {
     try {
       const raw = localStorage.getItem(STORAGE_KEY);
@@ -24,8 +58,15 @@ const store = {
       this.data = defaultData();
     }
   },
-  save() {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(this.data));
+  async save() {
+    if (this.mode === 'firebase') {
+      clearTimeout(this.saveTimer);
+      this.saveTimer = setTimeout(async () => {
+        try { await window.daymxFirebase.setData(this.data); } catch (e) { console.warn('Firebase save failed', e); }
+      }, 250);
+    } else {
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(this.data));
+    }
   },
 };
 
@@ -559,14 +600,16 @@ function closeModal() { $('#modal').hidden = true; }
 // ------------------------------
 // App wiring
 // ------------------------------
-function init() {
-  store.load();
+async function init() {
+  // Attempt Firebase first; fallback to localStorage
+  const usedFirebase = await store.tryFirebase();
+  if (!usedFirebase) store.load();
   // Normalize, colorize and index
   (store.data.threads || []).forEach(normalizeNode);
   autoAssignThreadColors();
   recomputeIndexes();
   // Seed example if empty
-  if (!store.data.threads.length) {
+  if (store.mode === 'local' && !store.data.threads.length) {
     const fitness = createNode('Fitness');
     fitness.children.push(createNode('Strength'));
     fitness.children.push(createNode('Cardio'));

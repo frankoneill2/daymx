@@ -6,10 +6,19 @@ Overview
 - Two phases: Prepare (structure and inputs) and Review (Instagram Stories–style walkthrough).
 - Data persists to localStorage only. No backend.
 
-Run
+Run (Static)
 
 - Open `index.html` in a modern browser (Chrome, Safari, Edge, Firefox).
 - Best on mobile or a small window; fully client-side.
+
+Run (Server + Database)
+
+- Requirements: Node.js 18+.
+- Start server: `npm start` (or `node server/server.js`)
+- Visit: `http://localhost:5173` (served with an API)
+- Data persistence:
+  - The app will auto-detect the API at `/api/data` and persist to `server/db.json`.
+  - If the API is not reachable, it falls back to localStorage.
 
 Key Concepts
 
@@ -42,7 +51,27 @@ Notes
 - The review card note fields under questions are transient (not saved), intended for quick thoughts.
 - By default, all nodes (threads and subthreads) appear in Review. If you prefer only leaf nodes, change `subthreadsForReview()` in `src/app.js` to filter by `n.children.length === 0`.
 
+Deploying
+
+- GitHub Pages continues to host the static app (no server runtime). For the API, deploy `server/server.js` separately (e.g., on a small VPS or Render/Fly/Heroku). Update CORS if hosting API on a different origin; by default it is permissive for development.
+  - Alternatively, use Firebase Firestore directly from the client (recommended). See below.
+
+Firebase (Firestore) Setup
+
+- Create a Firebase project and a Web App; copy the config.
+- Enable Authentication → Anonymous sign-in; add `frankoneill2.github.io` to Authorized domains.
+- Enable Firestore (Production mode). Use rules:
+  rules_version = '2';
+  service cloud.firestore {
+    match /databases/{database}/documents {
+      match /daymx/{uid} {
+        allow read, write: if request.auth != null && request.auth.uid == uid;
+      }
+    }
+  }
+- Edit `src/firebase-init.js` to include your config if different.
+- The app auto-detects Firebase on load; otherwise falls back to localStorage.
+
 License
 
 - Prototype provided as-is for personal use and iteration.
-
