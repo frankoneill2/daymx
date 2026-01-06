@@ -18,6 +18,16 @@ const store = {
   mode: 'local', // 'local' | 'firebase'
   unsub: null,
   saveTimer: null,
+  saveNow(dataOverride) {
+    if (this.mode === 'firebase') {
+      try {
+        const payload = dataOverride || JSON.parse(JSON.stringify(this.data));
+        window.daymxFirebase.setData(payload);
+      } catch (e) { console.warn('Immediate save failed', e); }
+    } else {
+      try { localStorage.setItem(STORAGE_KEY, JSON.stringify(this.data)); } catch {}
+    }
+  },
   async tryFirebase() {
     try {
       if (!window.daymxFirebase) return false;
@@ -424,7 +434,7 @@ function openTasksModal(nodeId) {
 // Review flow
 // ------------------------------
 let reviewState = {
-  nodes: [],
+  ids: [],
   idx: 0,
 };
 
@@ -432,7 +442,7 @@ function startReview() {
   // ensure latest structure is indexed
   recomputeIndexes();
   const nodes = subthreadsForReview();
-  reviewState = { nodes, idx: 0 };
+  reviewState = { ids: nodes.map(n => n.id), idx: 0 };
   if (!nodes.length) {
     $('#review-empty').hidden = false;
     $('#review-stage').hidden = true;
@@ -449,13 +459,14 @@ function startReview() {
 function renderProgress() {
   const bar = $('#story-progress');
   bar.innerHTML = '';
-  const total = reviewState.nodes.length || 1;
+  const total = reviewState.ids.length || 1;
   for (let i = 0; i < total; i++) {
-    const node = reviewState.nodes[i];
+    const node = findNodeById(store.data.threads, reviewState.ids[i]);
     const root = rootOf(node);
     // divider between different root threads
     if (i > 0) {
-      const prevRoot = rootOf(reviewState.nodes[i - 1]);
+      const prevNode = findNodeById(store.data.threads, reviewState.ids[i - 1]);
+      const prevRoot = rootOf(prevNode);
       if (prevRoot?.id !== root?.id) bar.append(el('div', { class: 'divider' }));
     }
     const seg = el('div', { class: 'segment' });
@@ -472,7 +483,7 @@ function renderProgress() {
 }
 
 function renderStoryCard() {
-  const n = reviewState.nodes[reviewState.idx];
+  const n = findNodeById(store.data.threads, reviewState.ids[reviewState.idx]);
   const card = $('#story-card');
   card.innerHTML = '';
 
@@ -513,12 +524,18 @@ function renderStoryCard() {
     const editBtn = el('button', { class: 'btn ghost' }, 'Edit');
     editBtn.addEventListener('click', () => {
       const val = confirmName('Edit question', q.text);
-      if (val != null && val.trim()) { q.text = val.trim(); store.save(); renderStoryCard(); }
+      if (val != null && val.trim()) {
+        const live = findNodeById(store.data.threads, n.id);
+        const qi = live.questions.findIndex(x => x.id === q.id);
+        if (qi >= 0) { live.questions[qi].text = val.trim(); }
+        store.saveNow(); renderStoryCard();
+      }
     });
     const delBtn = el('button', { class: 'btn ghost' }, 'Remove');
     delBtn.addEventListener('click', () => {
-      n.questions = n.questions.filter(x => x.id !== q.id);
-      store.save(); renderStoryCard(); renderProgress();
+      const live = findNodeById(store.data.threads, n.id);
+      live.questions = live.questions.filter(x => x.id !== q.id);
+      store.saveNow(); renderStoryCard(); renderProgress();
     });
     actions.append(editBtn, delBtn);
     top.append(label, actions);
@@ -531,8 +548,9 @@ function renderStoryCard() {
   const qBtn = el('button', { class: 'btn' }, 'Add');
   qBtn.addEventListener('click', () => {
     const t = qInput.value.trim(); if (!t) return;
-    n.questions.push(createQuestion(t)); qInput.value = '';
-    store.save(); renderProgress(); renderStoryCard();
+    const live = findNodeById(store.data.threads, n.id);
+    live.questions.push(createQuestion(t)); qInput.value = '';
+    store.saveNow(); renderProgress(); renderStoryCard();
   });
   addQ.append(qInput, qBtn);
   qSection.append(addQ);
@@ -547,24 +565,38 @@ function renderStoryCard() {
     const cb = el('input', { type: 'checkbox' });
     cb.checked = !!t.completed;
     cb.addEventListener('change', () => {
-      t.completed = cb.checked; store.save();
-      item.classList.toggle('completed', t.completed);
+      const live = findNodeById(store.data.threads, n.id);
+      const ti = live.tasks.findIndex(x => x.id === t.id);
+      if (ti >= 0) { live.tasks[ti].completed = cb.checked; }
+      store.saveNow();
+      item.classList.toggle('completed', cb.checked);
     });
     const text = el('div', {}, t.text);
     const btns = el('div', { class: 'meta' });
     const pri = el('select', { class: 'priority-select', title: 'Priority' });
     for (let i = 1; i <= 5; i++) pri.append(el('option', { value: String(i) }, i));
     pri.value = String(t.priority || 3);
-    pri.addEventListener('change', () => { t.priority = Number(pri.value); store.save(); renderStoryCard(); renderProgress(); });
+    pri.addEventListener('change', () => {
+      const live = findNodeById(store.data.threads, n.id);
+      const ti = live.tasks.findIndex(x => x.id === t.id);
+      if (ti >= 0) { live.tasks[ti].priority = Number(pri.value); }
+      store.saveNow(); renderStoryCard(); renderProgress();
+    });
     const editBtn = el('button', { class: 'btn ghost' }, 'Edit');
     editBtn.addEventListener('click', () => {
       const val = confirmName('Edit task', t.text);
-      if (val != null && val.trim()) { t.text = val.trim(); store.save(); renderStoryCard(); }
+      if (val != null && val.trim()) {
+        const live = findNodeById(store.data.threads, n.id);
+        const ti = live.tasks.findIndex(x => x.id === t.id);
+        if (ti >= 0) { live.tasks[ti].text = val.trim(); }
+        store.saveNow(); renderStoryCard();
+      }
     });
     const delBtn = el('button', { class: 'btn ghost' }, 'Remove');
     delBtn.addEventListener('click', () => {
-      n.tasks = n.tasks.filter(x => x.id !== t.id);
-      store.save(); renderStoryCard(); renderProgress();
+      const live = findNodeById(store.data.threads, n.id);
+      live.tasks = live.tasks.filter(x => x.id !== t.id);
+      store.saveNow(); renderStoryCard(); renderProgress();
     });
     btns.append(pri, editBtn, delBtn);
     item.append(cb, text, btns);
@@ -576,8 +608,9 @@ function renderStoryCard() {
   const tBtn = el('button', { class: 'btn' }, 'Add');
   tBtn.addEventListener('click', () => {
     const t = tInput.value.trim(); if (!t) return;
-    n.tasks.push(createTask(t)); tInput.value = '';
-    store.save(); renderProgress(); renderStoryCard();
+    const live = findNodeById(store.data.threads, n.id);
+    live.tasks.push(createTask(t)); tInput.value = '';
+    store.saveNow(); renderProgress(); renderStoryCard();
   });
   addT.append(tInput, tBtn);
 
@@ -585,7 +618,7 @@ function renderStoryCard() {
 }
 
 function nextStory() {
-  if (reviewState.idx < reviewState.nodes.length - 1) {
+  if (reviewState.idx < reviewState.ids.length - 1) {
     reviewState.idx += 1; renderProgress(); renderStoryCard();
   } else {
     // End of review: hide stage, show start button and a completion message
