@@ -215,6 +215,80 @@ function renderNode(node) {
   footer.append(meta, el('div'));
   container.append(footer);
 
+  // Inline Questions (Prepare)
+  const qSection = el('div', { class: 'story-section' });
+  qSection.append(el('div', { class: 'subtext' }, 'Questions'));
+  const qList = el('div', { class: 'inline-list' });
+  if (!node.questions.length) qList.append(el('div', { class: 'empty' }, 'No questions yet.'));
+  node.questions.forEach((q) => {
+    const row = el('div', { class: 'inline-item' });
+    const top = el('div', { class: 'kv' });
+    const label = el('div', {}, q.text);
+    const actions = el('div');
+    const edit = el('button', { class: 'btn ghost' }, 'Edit');
+    edit.addEventListener('click', () => {
+      const val = confirmName('Edit question', q.text);
+      if (val != null && val.trim()) { q.text = val.trim(); store.save(); renderThreads(); }
+    });
+    const del = el('button', { class: 'btn ghost' }, 'Remove');
+    del.addEventListener('click', () => {
+      node.questions = node.questions.filter(x => x.id !== q.id);
+      store.save(); renderThreads();
+    });
+    actions.append(edit, del);
+    top.append(label, actions);
+    row.append(top);
+    qList.append(row);
+  });
+  const qAdd = el('div', { class: 'add-row' });
+  const qInput = el('input', { type: 'text', placeholder: 'Add question…' });
+  const qBtn = el('button', { class: 'btn primary' }, 'Add');
+  qBtn.addEventListener('click', () => {
+    const t = qInput.value.trim(); if (!t) return;
+    node.questions.push(createQuestion(t)); qInput.value = '';
+    store.save(); renderThreads();
+  });
+  qAdd.append(qInput, qBtn);
+  qSection.append(qList, qAdd);
+  container.append(qSection);
+
+  // Inline Tasks (Prepare)
+  const tSection = el('div', { class: 'story-section' });
+  tSection.append(el('div', { class: 'subtext' }, 'Tasks'));
+  const tList = el('div', { class: 'inline-list' });
+  if (!node.tasks.length) tList.append(el('div', { class: 'empty' }, 'No tasks yet.'));
+  node.tasks.forEach((t) => {
+    const row = el('div', { class: 'inline-item' });
+    const top = el('div', { class: 'kv' });
+    const label = el('div', {}, t.text);
+    const actions = el('div');
+    const edit = el('button', { class: 'btn ghost' }, 'Edit');
+    edit.addEventListener('click', () => {
+      const val = confirmName('Edit task', t.text);
+      if (val != null && val.trim()) { t.text = val.trim(); store.save(); renderThreads(); }
+    });
+    const del = el('button', { class: 'btn ghost' }, 'Remove');
+    del.addEventListener('click', () => {
+      node.tasks = node.tasks.filter(x => x.id !== t.id);
+      store.save(); renderThreads();
+    });
+    actions.append(edit, del);
+    top.append(label, actions);
+    row.append(top);
+    tList.append(row);
+  });
+  const tAdd = el('div', { class: 'add-row' });
+  const tInput = el('input', { type: 'text', placeholder: 'Add task…' });
+  const tBtn = el('button', { class: 'btn primary' }, 'Add');
+  tBtn.addEventListener('click', () => {
+    const txt = tInput.value.trim(); if (!txt) return;
+    node.tasks.push(createTask(txt)); tInput.value = '';
+    store.save(); renderThreads();
+  });
+  tAdd.append(tInput, tBtn);
+  tSection.append(tList, tAdd);
+  container.append(tSection);
+
   if (node.children.length) {
     const kids = el('div', { class: 'node-children' });
     for (const child of node.children) kids.append(renderNode(child));
