@@ -321,7 +321,7 @@ function renderNode(node) {
     const pri = el('select', { class: 'priority-select', title: 'Priority' });
     for (let i = 1; i <= 5; i++) pri.append(el('option', { value: String(i) }, i));
     pri.value = String(t.priority || 3);
-    pri.addEventListener('change', () => { t.priority = Number(pri.value); store.save(); renderThreads(); });
+    pri.addEventListener('change', () => { t.priority = Number(pri.value); store.saveNow(); renderThreads(); });
     const edit = el('button', { class: 'btn ghost' }, 'Edit');
     edit.addEventListener('click', () => {
       const val = confirmName('Edit task', t.text);
@@ -796,7 +796,7 @@ function renderTasksPane() {
     const pri = el('select', { class: 'priority-select', title: 'Priority' });
     for (let i = 1; i <= 5; i++) pri.append(el('option', { value: String(i) }, i));
     pri.value = String(t.priority || 3);
-    pri.addEventListener('change', () => { t.priority = Number(pri.value); store.save(); renderTasksPane(); });
+    pri.addEventListener('change', () => { t.priority = Number(pri.value); store.saveNow(); renderTasksPane(); });
     const edit = el('button', { class: 'btn ghost' }, 'Edit');
     edit.addEventListener('click', () => {
       const val = confirmName('Edit task', t.text);
