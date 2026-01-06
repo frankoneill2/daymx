@@ -105,6 +105,17 @@ body {
 .task .meta { display: flex; align-items: center; gap: 8px; }
 .task .ctx { color: var(--subtext); font-size: 12px; }
 
+/* Availability UI */
+.availability { display: grid; gap: 8px; padding: 8px; border: 1px dashed var(--border); border-radius: 10px; background: #0c0f17; }
+.availability .row { display: grid; grid-template-columns: 120px 1fr auto; gap: 8px; align-items: center; }
+.availability input[type="datetime-local"], .availability input[type="text"] { width: 100%; padding: 8px; border-radius: 8px; border: 1px solid var(--border); background: transparent; color: var(--text); }
+.chip { display: inline-flex; align-items: center; gap: 6px; padding: 2px 8px; background: #121522; border: 1px solid var(--border); border-radius: 999px; font-size: 12px; }
+.chip button { border: 0; background: transparent; color: var(--subtext); cursor: pointer; }
+.chiplist { display: flex; flex-wrap: wrap; gap: 6px; }
+.pill { display: inline-flex; align-items: center; padding: 2px 8px; border-radius: 999px; background: #2a2e3a; color: var(--text); font-size: 11px; }
+.tasks-controls { display: flex; gap: 8px; align-items: center; margin: 10px 0; }
+.tasks-controls select, .tasks-controls label { font-size: 14px; }
+
 /* Thread identity UI */
 .thread-line { display: flex; align-items: center; gap: 8px; }
 .thread-pill { display: inline-flex; align-items: center; gap: 6px; padding: 4px 10px; border-radius: 999px; font-weight: 700; font-size: 12px; color: white; background: color-mix(in srgb, var(--thread-color, var(--accent)) 80%, black); border: 1px solid color-mix(in srgb, var(--thread-color, var(--accent)) 70%, black); }

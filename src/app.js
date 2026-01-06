@@ -93,7 +93,7 @@ function createQuestion(text = '') {
 }
 
 function createTask(text = '') {
-  return { id: uid('t'), text, completed: false, priority: 3 };
+  return { id: uid('t'), text, completed: false, priority: 3, availableAt: null, contexts: [], waitingOn: '', followUpAt: null };
 }
 
 function findNodeById(rootList, id) {
@@ -182,8 +182,59 @@ function normalizeNode(n) {
   n.tasks.forEach(t => {
     if (typeof t.completed !== 'boolean') t.completed = !!t.completed;
     if (typeof t.priority !== 'number' || t.priority < 1 || t.priority > 5) t.priority = 3;
+    if (!('availableAt' in t)) t.availableAt = null;
+    if (!('contexts' in t)) t.contexts = [];
+    if (!('waitingOn' in t)) t.waitingOn = '';
+    if (!('followUpAt' in t)) t.followUpAt = null;
   });
   n.children.forEach(normalizeNode);
+}
+
+// ------------------------------
+// Availability helpers
+// ------------------------------
+function parseLocalDateTime(value) {
+  if (!value) return null;
+  const dt = new Date(value);
+  if (isNaN(dt)) return null;
+  return dt.toISOString();
+}
+
+function toLocalInputValue(iso) {
+  if (!iso) return '';
+  const d = new Date(iso);
+  if (isNaN(d)) return '';
+  const pad = (n) => String(n).padStart(2, '0');
+  const yyyy = d.getFullYear();
+  const mm = pad(d.getMonth() + 1);
+  const dd = pad(d.getDate());
+  const hh = pad(d.getHours());
+  const mi = pad(d.getMinutes());
+  return `${yyyy}-${mm}-${dd}T${hh}:${mi}`;
+}
+
+function isTaskAvailable(t, now = new Date(), currentContext = null) {
+  if (t.waitingOn && t.waitingOn.trim()) return false;
+  if (t.availableAt) {
+    const at = new Date(t.availableAt);
+    if (now < at) return false;
+  }
+  if (Array.isArray(t.contexts) && t.contexts.length) {
+    if (!currentContext || !t.contexts.includes(currentContext)) return false;
+  }
+  return true;
+}
+
+function availabilityReason(t, now = new Date(), currentContext = null) {
+  if (t.waitingOn && t.waitingOn.trim()) return `Waiting: ${t.waitingOn.trim()}`;
+  if (t.availableAt) {
+    const at = new Date(t.availableAt);
+    if (now < at) return `Available ${at.toLocaleString()}`;
+  }
+  if (Array.isArray(t.contexts) && t.contexts.length) {
+    if (!currentContext || !t.contexts.includes(currentContext)) return `Context: ${t.contexts.join(', ')}`;
+  }
+  return '';
 }
 
 // ------------------------------
@@ -211,6 +262,72 @@ function confirmName(promptText, initial = '') {
   const name = window.prompt(promptText, initial);
   if (!name) return null;
   return name.trim();
+}
+
+function buildAvailabilityControls(nodeId, taskId, rerender) {
+  const n = findNodeById(store.data.threads, nodeId);
+  const t = (n?.tasks || []).find(x => x.id === taskId);
+  const avail = el('div', { class: 'availability' });
+  if (!n || !t) return avail;
+  // Available From
+  const row1 = el('div', { class: 'row' });
+  row1.append(el('div', { class: 'subtext' }, 'Available from'));
+  const dt = el('input', { type: 'datetime-local' });
+  dt.value = toLocalInputValue(t.availableAt);
+  dt.addEventListener('change', () => {
+    const live = findNodeById(store.data.threads, nodeId);
+    const ti = live.tasks.findIndex(x => x.id === taskId);
+    if (ti >= 0) live.tasks[ti].availableAt = parseLocalDateTime(dt.value);
+    store.saveNow(); rerender && rerender();
+  });
+  const clear1 = el('button', { class: 'btn ghost' }, 'Clear');
+  clear1.addEventListener('click', () => { dt.value = ''; const live = findNodeById(store.data.threads, nodeId); const ti = live.tasks.findIndex(x => x.id === taskId); if (ti >= 0) live.tasks[ti].availableAt = null; store.saveNow(); rerender && rerender(); });
+  row1.append(dt, clear1);
+  avail.append(row1);
+
+  // Contexts
+  const row2 = el('div', { class: 'row' });
+  row2.append(el('div', { class: 'subtext' }, 'Contexts'));
+  const chipWrap = el('div', { class: 'chiplist' });
+  (t.contexts || []).forEach((c) => {
+    const ch = el('span', { class: 'chip' }, [c, el('button', {}, '✕')]);
+    ch.querySelector('button').addEventListener('click', () => {
+      const live = findNodeById(store.data.threads, nodeId);
+      const ti = live.tasks.findIndex(x => x.id === taskId);
+      if (ti >= 0) {
+        live.tasks[ti].contexts = (live.tasks[ti].contexts || []).filter(x => x !== c);
+        store.saveNow(); rerender && rerender();
+      }
+    });
+    chipWrap.append(ch);
+  });
+  const ctxInput = el('input', { type: 'text', placeholder: 'Add context…' });
+  const addCtx = el('button', { class: 'btn ghost' }, 'Add');
+  addCtx.addEventListener('click', () => {
+    const v = ctxInput.value.trim(); if (!v) return;
+    const live = findNodeById(store.data.threads, nodeId);
+    const ti = live.tasks.findIndex(x => x.id === taskId);
+    if (ti >= 0) {
+      const arr = live.tasks[ti].contexts || [];
+      if (!arr.includes(v)) arr.push(v);
+      store.saveNow(); rerender && rerender(); ctxInput.value = '';
+    }
+  });
+  row2.append(chipWrap, addCtx);
+  avail.append(row2);
+
+  // Waiting on
+  const row3 = el('div', { class: 'row' });
+  row3.append(el('div', { class: 'subtext' }, 'Waiting on'));
+  const waitInput = el('input', { type: 'text', placeholder: 'Name or reason…' });
+  waitInput.value = t.waitingOn || '';
+  waitInput.addEventListener('change', () => { const live = findNodeById(store.data.threads, nodeId); const ti = live.tasks.findIndex(x => x.id === taskId); if (ti >= 0) { live.tasks[ti].waitingOn = waitInput.value.trim(); } store.saveNow(); rerender && rerender(); });
+  const clearWait = el('button', { class: 'btn ghost' }, 'Clear');
+  clearWait.addEventListener('click', () => { const live = findNodeById(store.data.threads, nodeId); const ti = live.tasks.findIndex(x => x.id === taskId); if (ti >= 0) { live.tasks[ti].waitingOn = ''; } store.saveNow(); rerender && rerender(); });
+  row3.append(waitInput, clearWait);
+  avail.append(row3);
+
+  return avail;
 }
 
 // ------------------------------
@@ -335,6 +452,8 @@ function renderNode(node) {
     actions.append(pri, edit, del);
     top.append(label, actions);
     row.append(top);
+    // Availability controls (Prepare)
+    row.append(buildAvailabilityControls(node.id, t.id, () => renderThreads()));
     tList.append(row);
   });
   const tAdd = el('div', { class: 'add-row' });
@@ -600,6 +719,11 @@ function renderStoryCard() {
     });
     btns.append(pri, editBtn, delBtn);
     item.append(cb, text, btns);
+    // Reason pill if blocked (no context filtering here)
+    const reason = availabilityReason(t);
+    if (reason) item.append(el('span', { class: 'pill' }, reason));
+    // Availability controls (Review)
+    item.append(buildAvailabilityControls(n.id, t.id, () => renderStoryCard()));
     tasksEl.append(item);
   }
   // Quick add task in review
@@ -773,12 +897,53 @@ function nodePath(n) {
   return names.join(' › ');
 }
 
+let tasksViewState = { currentContext: 'Any', showBlocked: false };
+
+function allContexts() {
+  const set = new Set();
+  const refs = flattenTaskRefs();
+  refs.forEach(r => (r.task.contexts || []).forEach(c => set.add(c)));
+  return Array.from(set).sort();
+}
+
 function renderTasksPane() {
   const root = $('#tasks-root');
   if (!root) return;
   root.innerHTML = '';
-  const refs = flattenTaskRefs()
-    .sort((a, b) => (a.task.priority || 3) - (b.task.priority || 3));
+
+  // Controls
+  const controls = $('#tasks-controls');
+  if (controls) {
+    controls.innerHTML = '';
+    controls.append(el('label', {}, 'Context: '));
+    const sel = el('select');
+    sel.append(el('option', { value: 'Any' }, 'Any'));
+    for (const c of allContexts()) sel.append(el('option', { value: c }, c));
+    sel.value = tasksViewState.currentContext || 'Any';
+    sel.addEventListener('change', () => { tasksViewState.currentContext = sel.value; renderTasksPane(); });
+    const showLbl = el('label', {});
+    const showCb = el('input', { type: 'checkbox' });
+    showCb.checked = !!tasksViewState.showBlocked;
+    showCb.addEventListener('change', () => { tasksViewState.showBlocked = showCb.checked; renderTasksPane(); });
+    showLbl.append(showCb, document.createTextNode(' Show blocked'));
+    controls.append(sel, showLbl);
+  }
+
+  const ctx = tasksViewState.currentContext === 'Any' ? null : tasksViewState.currentContext;
+  const now = new Date();
+  let refs = flattenTaskRefs();
+  const filtered = refs.filter(ref => tasksViewState.showBlocked ? true : isTaskAvailable(ref.task, now, ctx));
+  refs = filtered
+    .sort((a, b) => {
+      const aa = isTaskAvailable(a.task, now, ctx) ? 0 : 1;
+      const bb = isTaskAvailable(b.task, now, ctx) ? 0 : 1;
+      if (aa !== bb) return aa - bb; // available first
+      const pa = a.task.priority || 3; const pb = b.task.priority || 3;
+      if (pa !== pb) return pa - pb; // 1 highest
+      const da = a.task.availableAt ? new Date(a.task.availableAt).getTime() : Infinity;
+      const db = b.task.availableAt ? new Date(b.task.availableAt).getTime() : Infinity;
+      return da - db;
+    });
   if (!refs.length) {
     root.append(el('div', { class: 'empty' }, 'No tasks yet.'));
     return;
@@ -788,10 +953,12 @@ function renderTasksPane() {
     const item = el('div', { class: 'task' + (t.completed ? ' completed' : ''), style: `border-left:6px solid ${r?.color || 'var(--accent)'}` });
     const cb = el('input', { type: 'checkbox' });
     cb.checked = !!t.completed;
-    cb.addEventListener('change', () => { t.completed = cb.checked; store.save(); item.classList.toggle('completed', t.completed); });
+    cb.addEventListener('change', () => { t.completed = cb.checked; store.saveNow(); item.classList.toggle('completed', t.completed); });
     const main = el('div');
     main.append(el('div', {}, t.text));
-    main.append(el('div', { class: 'ctx' }, nodePath(n)));
+    const reason = availabilityReason(t, now, ctx);
+    const ctxLine = nodePath(n) + (reason ? ` • ${reason}` : '');
+    main.append(el('div', { class: 'ctx' }, ctxLine));
     const actions = el('div', { class: 'meta' });
     const pri = el('select', { class: 'priority-select', title: 'Priority' });
     for (let i = 1; i <= 5; i++) pri.append(el('option', { value: String(i) }, i));
@@ -809,6 +976,8 @@ function renderTasksPane() {
     });
     actions.append(pri, edit, del);
     item.append(cb, main, actions);
+    // Availability controls in Tasks pane
+    item.append(buildAvailabilityControls(n.id, t.id, () => renderTasksPane()));
     root.append(item);
   }
 }
