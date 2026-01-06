@@ -308,10 +308,12 @@ function startReview() {
   if (!nodes.length) {
     $('#review-empty').hidden = false;
     $('#review-stage').hidden = true;
+    $('#btn-start-review').hidden = false;
     return;
   }
   $('#review-empty').hidden = true;
   $('#review-stage').hidden = false;
+  $('#btn-start-review').hidden = true;
   renderProgress();
   renderStoryCard();
 }
@@ -376,9 +378,24 @@ function renderStoryCard() {
   if (!n.questions.length) qSection.append(el('div', { class: 'empty' }, 'No questions yet.'));
   for (const q of n.questions) {
     const wrap = el('div', { class: 'inline-item' });
+    // Top row: label + actions
+    const top = el('div', { class: 'kv' });
     const label = el('div', {}, q.text);
+    const actions = el('div');
+    const editBtn = el('button', { class: 'btn ghost' }, 'Edit');
+    editBtn.addEventListener('click', () => {
+      const val = confirmName('Edit question', q.text);
+      if (val != null && val.trim()) { q.text = val.trim(); store.save(); renderStoryCard(); }
+    });
+    const delBtn = el('button', { class: 'btn ghost' }, 'Remove');
+    delBtn.addEventListener('click', () => {
+      n.questions = n.questions.filter(x => x.id !== q.id);
+      store.save(); renderStoryCard(); renderProgress();
+    });
+    actions.append(editBtn, delBtn);
+    top.append(label, actions);
     const note = el('textarea', { placeholder: 'Notes… (optional, not saved)' });
-    wrap.append(label, note);
+    wrap.append(top, note);
     qSection.append(wrap);
   }
   // Quick add question in review
@@ -407,12 +424,19 @@ function renderStoryCard() {
       item.classList.toggle('completed', t.completed);
     });
     const text = el('div', {}, t.text);
+    const btns = el('div');
     const editBtn = el('button', { class: 'btn ghost' }, 'Edit');
     editBtn.addEventListener('click', () => {
       const val = confirmName('Edit task', t.text);
-      if (val != null) { t.text = val; store.save(); renderStoryCard(); }
+      if (val != null && val.trim()) { t.text = val.trim(); store.save(); renderStoryCard(); }
     });
-    item.append(cb, text, editBtn);
+    const delBtn = el('button', { class: 'btn ghost' }, 'Remove');
+    delBtn.addEventListener('click', () => {
+      n.tasks = n.tasks.filter(x => x.id !== t.id);
+      store.save(); renderStoryCard(); renderProgress();
+    });
+    btns.append(editBtn, delBtn);
+    item.append(cb, text, btns);
     tasksEl.append(item);
   }
   // Quick add task in review
@@ -433,9 +457,12 @@ function nextStory() {
   if (reviewState.idx < reviewState.nodes.length - 1) {
     reviewState.idx += 1; renderProgress(); renderStoryCard();
   } else {
-    // End of review
-    $('#story-card').innerHTML = '';
-    $('#story-card').append(el('div', { class: 'empty' }, 'Review complete. Great work!'));
+    // End of review: hide stage, show start button and a completion message
+    $('#review-stage').hidden = true;
+    const msg = $('#review-empty');
+    msg.textContent = 'Review complete. Press Start Review to run again.';
+    msg.hidden = false;
+    $('#btn-start-review').hidden = false;
   }
 }
 
@@ -527,8 +554,16 @@ function onReviewVisibility() {
   const nodes = subthreadsForReview();
   const has = nodes.length > 0;
   // Show empty only when there are no subthreads; stage remains hidden until start
-  $('#review-empty').hidden = has ? true : false;
+  const empty = $('#review-empty');
+  if (has) {
+    empty.textContent = 'Press Start Review to begin.';
+    empty.hidden = false;
+  } else {
+    empty.textContent = 'No subthreads yet. Add some in Prepare.';
+    empty.hidden = false;
+  }
   $('#review-stage').hidden = true;
+  $('#btn-start-review').hidden = false;
 }
 
 document.addEventListener('DOMContentLoaded', init);
