@@ -22,6 +22,9 @@ body {
   -moz-osx-font-smoothing: grayscale;
 }
 
+/* Ensure elements with [hidden] truly disappear, even if other rules set display */
+[hidden] { display: none !important; }
+
 .app-header {
   position: sticky;
   top: 0; z-index: 10;
