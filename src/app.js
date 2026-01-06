@@ -42,6 +42,7 @@ const store = {
         renderThreads();
         // If review is visible, refresh progress/card state
         if (!$('#review-stage').hidden) { renderProgress(); renderStoryCard(); }
+        if (!$('#view-tasks').hidden) { renderTasksPane(); }
       });
       return true;
     } catch (e) {
@@ -82,7 +83,7 @@ function createQuestion(text = '') {
 }
 
 function createTask(text = '') {
-  return { id: uid('t'), text, completed: false };
+  return { id: uid('t'), text, completed: false, priority: 3 };
 }
 
 function findNodeById(rootList, id) {
@@ -168,6 +169,10 @@ function normalizeNode(n) {
   n.questions = Array.isArray(n.questions) ? n.questions : [];
   n.tasks = Array.isArray(n.tasks) ? n.tasks : [];
   n.name = n.name || 'Untitled';
+  n.tasks.forEach(t => {
+    if (typeof t.completed !== 'boolean') t.completed = !!t.completed;
+    if (typeof t.priority !== 'number' || t.priority < 1 || t.priority > 5) t.priority = 3;
+  });
   n.children.forEach(normalizeNode);
 }
 
@@ -302,7 +307,11 @@ function renderNode(node) {
     const row = el('div', { class: 'inline-item' });
     const top = el('div', { class: 'kv' });
     const label = el('div', {}, t.text);
-    const actions = el('div');
+    const actions = el('div', { class: 'meta' });
+    const pri = el('select', { class: 'priority-select', title: 'Priority' });
+    for (let i = 1; i <= 5; i++) pri.append(el('option', { value: String(i) }, i));
+    pri.value = String(t.priority || 3);
+    pri.addEventListener('change', () => { t.priority = Number(pri.value); store.save(); renderThreads(); });
     const edit = el('button', { class: 'btn ghost' }, 'Edit');
     edit.addEventListener('click', () => {
       const val = confirmName('Edit task', t.text);
@@ -313,7 +322,7 @@ function renderNode(node) {
       node.tasks = node.tasks.filter(x => x.id !== t.id);
       store.save(); renderThreads();
     });
-    actions.append(edit, del);
+    actions.append(pri, edit, del);
     top.append(label, actions);
     row.append(top);
     tList.append(row);
@@ -542,7 +551,11 @@ function renderStoryCard() {
       item.classList.toggle('completed', t.completed);
     });
     const text = el('div', {}, t.text);
-    const btns = el('div');
+    const btns = el('div', { class: 'meta' });
+    const pri = el('select', { class: 'priority-select', title: 'Priority' });
+    for (let i = 1; i <= 5; i++) pri.append(el('option', { value: String(i) }, i));
+    pri.value = String(t.priority || 3);
+    pri.addEventListener('change', () => { t.priority = Number(pri.value); store.save(); renderStoryCard(); renderProgress(); });
     const editBtn = el('button', { class: 'btn ghost' }, 'Edit');
     editBtn.addEventListener('click', () => {
       const val = confirmName('Edit task', t.text);
@@ -553,7 +566,7 @@ function renderStoryCard() {
       n.tasks = n.tasks.filter(x => x.id !== t.id);
       store.save(); renderStoryCard(); renderProgress();
     });
-    btns.append(editBtn, delBtn);
+    btns.append(pri, editBtn, delBtn);
     item.append(cb, text, btns);
     tasksEl.append(item);
   }
@@ -629,6 +642,7 @@ async function init() {
   // Tabs
   $('#tab-prepare').addEventListener('click', () => switchView('prepare'));
   $('#tab-review').addEventListener('click', () => switchView('review'));
+  $('#tab-tasks').addEventListener('click', () => switchView('tasks'));
 
   // Prepare actions
   $('#btn-add-thread').addEventListener('click', () => {
@@ -655,20 +669,29 @@ async function init() {
 
   renderThreads();
   onReviewVisibility();
+  // Pre-render tasks pane if selected later
+  // No-op here; render on switch
 }
 
 function switchView(name) {
   const prepare = $('#view-prepare');
   const review = $('#view-review');
+  const tasks = $('#view-tasks');
   const tPrepare = $('#tab-prepare');
   const tReview = $('#tab-review');
+  const tTasks = $('#tab-tasks');
   const isPrepare = name === 'prepare';
-  prepare.hidden = !isPrepare; review.hidden = isPrepare;
+  const isReview = name === 'review';
+  const isTasks = name === 'tasks';
+  prepare.hidden = !isPrepare; review.hidden = !isReview; tasks.hidden = !isTasks;
   prepare.classList.toggle('active', isPrepare);
-  review.classList.toggle('active', !isPrepare);
+  review.classList.toggle('active', isReview);
+  tasks.classList.toggle('active', isTasks);
   tPrepare.classList.toggle('active', isPrepare);
-  tReview.classList.toggle('active', !isPrepare);
-  onReviewVisibility();
+  tReview.classList.toggle('active', isReview);
+  tTasks.classList.toggle('active', isTasks);
+  if (isReview) onReviewVisibility();
+  if (isTasks) renderTasksPane();
 }
 
 function onReviewVisibility() {
@@ -685,6 +708,76 @@ function onReviewVisibility() {
   }
   $('#review-stage').hidden = true;
   $('#btn-start-review').hidden = false;
+}
+
+// ------------------------------
+// Tasks screen (all tasks by priority)
+// ------------------------------
+function flattenTaskRefs() {
+  const out = [];
+  const roots = store.data.threads || [];
+  const walk = (list) => {
+    for (const n of list) {
+      for (let i = 0; i < (n.tasks || []).length; i++) {
+        const t = n.tasks[i];
+        out.push({ node: n, index: i, task: t, root: rootOf(n) });
+      }
+      if (n.children?.length) walk(n.children);
+    }
+  };
+  walk(roots);
+  return out;
+}
+
+function nodePath(n) {
+  const names = [];
+  let cur = n;
+  while (cur) {
+    names.unshift(cur.name);
+    const pid = parentById.get(cur.id);
+    cur = pid ? nodeById.get(pid) : null;
+  }
+  return names.join(' › ');
+}
+
+function renderTasksPane() {
+  const root = $('#tasks-root');
+  if (!root) return;
+  root.innerHTML = '';
+  const refs = flattenTaskRefs()
+    .sort((a, b) => (b.task.priority || 3) - (a.task.priority || 3));
+  if (!refs.length) {
+    root.append(el('div', { class: 'empty' }, 'No tasks yet.'));
+    return;
+  }
+  for (const ref of refs) {
+    const { task: t, node: n, root: r } = ref;
+    const item = el('div', { class: 'task' + (t.completed ? ' completed' : ''), style: `border-left:6px solid ${r?.color || 'var(--accent)'}` });
+    const cb = el('input', { type: 'checkbox' });
+    cb.checked = !!t.completed;
+    cb.addEventListener('change', () => { t.completed = cb.checked; store.save(); item.classList.toggle('completed', t.completed); });
+    const main = el('div');
+    main.append(el('div', {}, t.text));
+    main.append(el('div', { class: 'ctx' }, nodePath(n)));
+    const actions = el('div', { class: 'meta' });
+    const pri = el('select', { class: 'priority-select', title: 'Priority' });
+    for (let i = 1; i <= 5; i++) pri.append(el('option', { value: String(i) }, i));
+    pri.value = String(t.priority || 3);
+    pri.addEventListener('change', () => { t.priority = Number(pri.value); store.save(); renderTasksPane(); });
+    const edit = el('button', { class: 'btn ghost' }, 'Edit');
+    edit.addEventListener('click', () => {
+      const val = confirmName('Edit task', t.text);
+      if (val != null && val.trim()) { t.text = val.trim(); store.save(); renderTasksPane(); }
+    });
+    const del = el('button', { class: 'btn ghost' }, 'Remove');
+    del.addEventListener('click', () => {
+      n.tasks = n.tasks.filter(x => x.id !== t.id);
+      store.save(); renderTasksPane(); renderThreads(); renderProgress(); if (!$('#review-stage').hidden) renderStoryCard();
+    });
+    actions.append(pri, edit, del);
+    item.append(cb, main, actions);
+    root.append(item);
+  }
 }
 
 document.addEventListener('DOMContentLoaded', async () => {

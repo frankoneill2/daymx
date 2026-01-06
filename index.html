@@ -25,6 +25,7 @@
       <nav class="tabs" role="tablist" aria-label="Modes">
         <button id="tab-prepare" class="tab active" role="tab" aria-selected="true">Prepare</button>
         <button id="tab-review" class="tab" role="tab" aria-selected="false">Review</button>
+        <button id="tab-tasks" class="tab" role="tab" aria-selected="false">Tasks</button>
       </nav>
     </header>
 
@@ -53,6 +54,16 @@
             <button id="btn-next" class="btn primary grow">Next</button>
           </div>
         </div>
+      </section>
+    </main>
+
+    <main id="view-tasks" class="view" aria-labelledby="tab-tasks" hidden>
+      <section class="section">
+        <div class="section-header">
+          <h1>Tasks</h1>
+        </div>
+        <div class="subtext">Sorted by priority (5 highest)</div>
+        <div id="tasks-root" class="tasks all"></div>
       </section>
     </main>
 
