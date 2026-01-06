@@ -449,11 +449,15 @@ function renderNode(node) {
       node.tasks = node.tasks.filter(x => x.id !== t.id);
       store.save(); renderThreads();
     });
-    actions.append(pri, edit, del);
+    const avail = buildAvailabilityControls(node.id, t.id, () => renderThreads());
+    avail.hidden = true;
+    const availBtn = el('button', { class: 'btn ghost' }, 'Availability');
+    availBtn.addEventListener('click', () => { avail.hidden = !avail.hidden; });
+    actions.append(pri, availBtn, edit, del);
     top.append(label, actions);
     row.append(top);
-    // Availability controls (Prepare)
-    row.append(buildAvailabilityControls(node.id, t.id, () => renderThreads()));
+    // Availability controls (Prepare, hidden by default)
+    row.append(avail);
     tList.append(row);
   });
   const tAdd = el('div', { class: 'add-row' });
@@ -717,13 +721,17 @@ function renderStoryCard() {
       live.tasks = live.tasks.filter(x => x.id !== t.id);
       store.saveNow(); renderStoryCard(); renderProgress();
     });
-    btns.append(pri, editBtn, delBtn);
+    const avail = buildAvailabilityControls(n.id, t.id, () => renderStoryCard());
+    avail.hidden = true;
+    const availBtn = el('button', { class: 'btn ghost' }, 'Availability');
+    availBtn.addEventListener('click', () => { avail.hidden = !avail.hidden; });
+    btns.append(pri, availBtn, editBtn, delBtn);
     item.append(cb, text, btns);
     // Reason pill if blocked (no context filtering here)
     const reason = availabilityReason(t);
     if (reason) item.append(el('span', { class: 'pill' }, reason));
-    // Availability controls (Review)
-    item.append(buildAvailabilityControls(n.id, t.id, () => renderStoryCard()));
+    // Availability controls (Review, hidden by default)
+    item.append(avail);
     tasksEl.append(item);
   }
   // Quick add task in review
@@ -974,10 +982,14 @@ function renderTasksPane() {
       n.tasks = n.tasks.filter(x => x.id !== t.id);
       store.save(); renderTasksPane(); renderThreads(); renderProgress(); if (!$('#review-stage').hidden) renderStoryCard();
     });
-    actions.append(pri, edit, del);
+    const avail = buildAvailabilityControls(n.id, t.id, () => renderTasksPane());
+    avail.hidden = true;
+    const availBtn = el('button', { class: 'btn ghost' }, 'Availability');
+    availBtn.addEventListener('click', () => { avail.hidden = !avail.hidden; });
+    actions.append(pri, availBtn, edit, del);
     item.append(cb, main, actions);
-    // Availability controls in Tasks pane
-    item.append(buildAvailabilityControls(n.id, t.id, () => renderTasksPane()));
+    // Availability controls in Tasks pane (hidden by default)
+    item.append(avail);
     root.append(item);
   }
 }
