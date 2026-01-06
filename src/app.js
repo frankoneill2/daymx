@@ -83,13 +83,13 @@ function recomputeIndexes() {
   nodeById = new Map();
   rootById = new Map();
   const roots = store.data.threads || [];
-  const walk = (list, parent = null, root = null) => {
+  const walk = (list, parent = null, rootId = null) => {
     for (const n of list) {
+      const thisRootId = parent ? rootId : n.id; // top-level nodes are their own root
       nodeById.set(n.id, n);
-      if (!root) root = n; // first-level call sets root to itself
       if (parent) parentById.set(n.id, parent.id);
-      rootById.set(n.id, root.id);
-      if (n.children?.length) walk(n.children, n, root);
+      rootById.set(n.id, thisRootId);
+      if (n.children?.length) walk(n.children, n, thisRootId);
     }
   };
   walk(roots, null, null);
@@ -186,6 +186,7 @@ function renderNode(node) {
     if (!name) return;
     node.name = name;
     store.save();
+    recomputeIndexes();
     renderThreads();
   });
 
@@ -195,6 +196,7 @@ function renderNode(node) {
     if (!name) return;
     node.children.push(createNode(name));
     store.save();
+    recomputeIndexes();
     renderThreads();
   });
 
@@ -303,6 +305,8 @@ let reviewState = {
 };
 
 function startReview() {
+  // ensure latest structure is indexed
+  recomputeIndexes();
   const nodes = subthreadsForReview();
   reviewState = { nodes, idx: 0 };
   if (!nodes.length) {
@@ -503,6 +507,7 @@ function init() {
     store.data.threads.push(fitness, reading, academic);
     autoAssignThreadColors();
     store.save();
+    recomputeIndexes();
   }
 
   // Tabs
