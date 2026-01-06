@@ -85,11 +85,12 @@ body {
 .story-stage { display: flex; flex-direction: column; gap: 12px; }
 .story-progress { display: grid; grid-auto-flow: column; gap: 4px; margin-bottom: 8px; }
 .segment { height: 4px; background: #2a2e3a; border-radius: 999px; overflow: hidden; }
-.segment .fill { height: 100%; width: 0; background: white; opacity: 0.9; }
+.segment .fill { height: 100%; width: 0; background: var(--seg-color, white); opacity: 0.95; }
 .segment.done .fill { width: 100%; background: white; opacity: 0.9; }
 .segment.current .fill { background: var(--accent-2); width: var(--w, 0%); }
+.divider { width: 2px; height: 4px; background: var(--border); border-radius: 999px; }
 
-.story-card { background: var(--panel); border: 1px solid var(--border); border-radius: var(--radius); padding: 14px; display: flex; flex-direction: column; gap: 12px; min-height: 300px; }
+.story-card { background: var(--panel); border: 1px solid var(--border); border-radius: var(--radius); padding: 14px; display: flex; flex-direction: column; gap: 12px; min-height: 300px; border-left: 6px solid var(--thread-color, var(--accent)); box-shadow: inset 6px 0 0 0 color-mix(in srgb, var(--thread-color, var(--accent)) 10%, transparent); }
 .story-header { display: flex; align-items: center; gap: 8px; }
 .story-title { font-size: 18px; font-weight: 700; }
 .story-section { display: flex; flex-direction: column; gap: 8px; }
@@ -99,6 +100,13 @@ body {
 .task input[type="checkbox"] { width: 18px; height: 18px; }
 .add-row { display: grid; grid-template-columns: 1fr auto; gap: 8px; }
 .add-row input { width: 100%; padding: 10px; border-radius: 10px; border: 1px solid var(--border); background: transparent; color: var(--text); }
+
+/* Thread identity UI */
+.thread-line { display: flex; align-items: center; gap: 8px; }
+.thread-pill { display: inline-flex; align-items: center; gap: 6px; padding: 4px 10px; border-radius: 999px; font-weight: 700; font-size: 12px; color: white; background: color-mix(in srgb, var(--thread-color, var(--accent)) 80%, black); border: 1px solid color-mix(in srgb, var(--thread-color, var(--accent)) 70%, black); }
+.thread-avatar { width: 18px; height: 18px; border-radius: 999px; display: grid; place-items: center; font-size: 11px; background: color-mix(in srgb, var(--thread-color, var(--accent)) 40%, black); color: white; }
+.breadcrumb { font-size: 12px; color: var(--subtext); }
+.story-controls .btn.primary { background: var(--thread-color, var(--accent)); border-color: var(--thread-color, var(--accent)); color: #0b0c10; }
 
 @media (min-width: 720px) {
   .section { padding: 20px; }

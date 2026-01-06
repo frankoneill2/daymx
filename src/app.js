@@ -72,6 +72,65 @@ function subthreadsForReview() {
 }
 
 // ------------------------------
+// Parent/root maps and colors
+// ------------------------------
+let parentById = new Map();
+let nodeById = new Map();
+let rootById = new Map();
+
+function recomputeIndexes() {
+  parentById = new Map();
+  nodeById = new Map();
+  rootById = new Map();
+  const roots = store.data.threads || [];
+  const walk = (list, parent = null, root = null) => {
+    for (const n of list) {
+      nodeById.set(n.id, n);
+      if (!root) root = n; // first-level call sets root to itself
+      if (parent) parentById.set(n.id, parent.id);
+      rootById.set(n.id, root.id);
+      if (n.children?.length) walk(n.children, n, root);
+    }
+  };
+  walk(roots, null, null);
+}
+
+function rootOf(node) {
+  if (!node) return null;
+  const rootId = rootById.get(node.id);
+  if (!rootId) return node; // if not found, assume itself
+  return nodeById.get(rootId) || node;
+}
+
+const THREAD_PALETTE = ['#4f8cff', '#36d399', '#f6ad55', '#ef5350', '#c084fc', '#22d3ee', '#eab308'];
+
+function hashName(name = '') {
+  let h = 0;
+  for (let i = 0; i < name.length; i++) {
+    h = (h * 31 + name.charCodeAt(i)) >>> 0;
+  }
+  return h >>> 0;
+}
+
+function autoAssignThreadColors() {
+  const roots = store.data.threads || [];
+  roots.forEach((t, idx) => {
+    if (!t.color) {
+      const h = hashName(t.name || '') + idx;
+      t.color = THREAD_PALETTE[h % THREAD_PALETTE.length];
+    }
+  });
+}
+
+function normalizeNode(n) {
+  n.children = Array.isArray(n.children) ? n.children : [];
+  n.questions = Array.isArray(n.questions) ? n.questions : [];
+  n.tasks = Array.isArray(n.tasks) ? n.tasks : [];
+  n.name = n.name || 'Untitled';
+  n.children.forEach(normalizeNode);
+}
+
+// ------------------------------
 // DOM helpers
 // ------------------------------
 const $ = (sel, el = document) => el.querySelector(sel);
@@ -116,7 +175,9 @@ function renderThreads() {
 function renderNode(node) {
   const container = el('div', { class: 'node', 'data-id': node.id });
   const header = el('div', { class: 'node-header' });
-  const title = el('div', { class: 'node-title' }, node.name || 'Untitled');
+  const titleWrap = el('div', { class: 'node-title' });
+  const colorDot = el('span', { style: `display:inline-block;width:10px;height:10px;border-radius:999px;background:${node.color || '#666'};margin-right:6px;vertical-align:middle;` });
+  titleWrap.append(colorDot, document.createTextNode(node.name || 'Untitled'));
   const actions = el('div', { class: 'node-actions' });
 
   const btnRename = el('button', { class: 'btn ghost' }, 'Rename');
@@ -144,7 +205,7 @@ function renderNode(node) {
   btnTasks.addEventListener('click', () => openTasksModal(node.id));
 
   actions.append(btnRename, btnAddChild, btnQuestions, btnTasks);
-  header.append(title, actions);
+  header.append(titleWrap, actions);
   container.append(header);
 
   const footer = el('div', { class: 'kv' });
@@ -260,7 +321,15 @@ function renderProgress() {
   bar.innerHTML = '';
   const total = reviewState.nodes.length || 1;
   for (let i = 0; i < total; i++) {
+    const node = reviewState.nodes[i];
+    const root = rootOf(node);
+    // divider between different root threads
+    if (i > 0) {
+      const prevRoot = rootOf(reviewState.nodes[i - 1]);
+      if (prevRoot?.id !== root?.id) bar.append(el('div', { class: 'divider' }));
+    }
     const seg = el('div', { class: 'segment' });
+    seg.style.setProperty('--seg-color', root?.color || 'white');
     const fill = el('div', { class: 'fill' });
     if (i < reviewState.idx) seg.classList.add('done');
     if (i === reviewState.idx) seg.classList.add('current');
@@ -282,13 +351,28 @@ function renderStoryCard() {
     return;
   }
 
+  const root = rootOf(n);
+  card.style.setProperty('--thread-color', root?.color || 'var(--accent)');
+
   // Header
   const header = el('div', { class: 'story-header' });
-  header.append(el('div', { class: 'story-title' }, n.name));
+  const threadLine = el('div', { class: 'thread-line' });
+  const initial = (root?.name || '?').trim().charAt(0).toUpperCase();
+  threadLine.append(
+    el('div', { class: 'thread-pill' }, [
+      el('div', { class: 'thread-avatar' }, initial),
+      root?.name || 'Thread'
+    ])
+  );
+  const breadcrumb = el('div', { class: 'breadcrumb' }, `${root?.name || ''} › ${n.name}`);
+  const title = el('div', { class: 'story-title' }, n.name);
+  header.append(threadLine);
+  header.append(title);
+  header.append(breadcrumb);
 
   // Questions
   const qSection = el('div', { class: 'story-section' });
-  qSection.append(el('div', { class: 'subtext' }, 'Questions'));
+  qSection.append(el('div', { class: 'subtext' }, `${root?.name || 'Thread'} — Questions`));
   if (!n.questions.length) qSection.append(el('div', { class: 'empty' }, 'No questions yet.'));
   for (const q of n.questions) {
     const wrap = el('div', { class: 'inline-item' });
@@ -311,7 +395,7 @@ function renderStoryCard() {
 
   // Tasks
   const tSection = el('div', { class: 'story-section' });
-  tSection.append(el('div', { class: 'subtext' }, 'Tasks'));
+  tSection.append(el('div', { class: 'subtext' }, `${root?.name || 'Thread'} — Tasks`));
   const tasksEl = el('div', { class: 'tasks' });
   if (!n.tasks.length) tasksEl.append(el('div', { class: 'empty' }, 'No tasks yet.'));
   for (const t of n.tasks) {
@@ -372,6 +456,10 @@ function closeModal() { $('#modal').hidden = true; }
 // ------------------------------
 function init() {
   store.load();
+  // Normalize, colorize and index
+  (store.data.threads || []).forEach(normalizeNode);
+  autoAssignThreadColors();
+  recomputeIndexes();
   // Seed example if empty
   if (!store.data.threads.length) {
     const fitness = createNode('Fitness');
@@ -386,6 +474,7 @@ function init() {
     exam.questions.push(createQuestion('When do I plan to complete this?'));
     exam.tasks.push(createTask('Read chapter on cardiology'));
     store.data.threads.push(fitness, reading, academic);
+    autoAssignThreadColors();
     store.save();
   }
 
@@ -397,8 +486,12 @@ function init() {
   $('#btn-add-thread').addEventListener('click', () => {
     const name = confirmName('New thread name');
     if (!name) return;
-    store.data.threads.push(createNode(name));
+    const t = createNode(name);
+    // assign color to new top-level thread
+    t.color = THREAD_PALETTE[hashName(name) % THREAD_PALETTE.length];
+    store.data.threads.push(t);
     store.save();
+    recomputeIndexes();
     renderThreads();
   });
 
