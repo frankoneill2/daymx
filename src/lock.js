@@ -1,19 +1,10 @@
 // Simple client-side lock screen. Low-stakes deterrent only.
-// Default password: "daymx" (change by updating LOCK_HASH below).
+// Password is checked client-side; visible to anyone who reads source.
 
 (function() {
   const LOCK_KEY_SESSION = 'daymx-unlocked';
   const LOCK_KEY_PERSIST = 'daymx-unlocked';
-  // SHA-256("daymx") in hex (lowercase)
-  const LOCK_HASH = '5f8a2f4c2ed2e2fd68ebf209c098f0fdb5a9a0d0c8a1a0f2f1a8c4a7e3a9a4b0';
-
-  async function sha256Hex(text) {
-    const enc = new TextEncoder();
-    const data = enc.encode(text);
-    const hash = await crypto.subtle.digest('SHA-256', data);
-    const bytes = new Uint8Array(hash);
-    return Array.from(bytes).map(b => b.toString(16).padStart(2, '0')).join('');
-  }
+  const LOCK_PASS = '6349xj';
 
   let unlockResolve;
   const ready = new Promise(res => (unlockResolve = res));
@@ -47,8 +38,7 @@
     form.addEventListener('submit', async (e) => {
       e.preventDefault();
       const pwd = input.value || '';
-      const hex = await sha256Hex(pwd);
-      if (hex === LOCK_HASH) {
+      if (pwd === LOCK_PASS) {
         markUnlocked(remember.checked);
         overlay.hidden = true;
         const app = document.getElementById('app');
