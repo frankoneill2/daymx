@@ -37,7 +37,7 @@
 
     form.addEventListener('submit', async (e) => {
       e.preventDefault();
-      const pwd = input.value || '';
+      const pwd = (input.value || '').trim();
       if (pwd === LOCK_PASS) {
         markUnlocked(remember.checked);
         overlay.hidden = true;
