@@ -114,6 +114,7 @@ body {
 
 /* Lock screen */
 .lock-overlay { position: fixed; inset: 0; z-index: 100; display: grid; place-items: center; background: rgba(0,0,0,.6); backdrop-filter: blur(6px); }
+.lock-overlay[hidden] { display: none !important; }
 .lock-card { width: min(92vw, 420px); background: var(--panel); border: 1px solid var(--border); border-radius: 16px; padding: 20px; box-shadow: 0 10px 30px rgba(0,0,0,.4); display: flex; flex-direction: column; gap: 12px; }
 .lock-title { font-size: 22px; font-weight: 800; }
 .lock-sub { color: var(--subtext); }

@@ -43,6 +43,8 @@
         overlay.hidden = true;
         const app = document.getElementById('app');
         if (app) app.hidden = false;
+        // Fully remove overlay to avoid any z-index or pointer-events issues
+        try { overlay.parentNode && overlay.parentNode.removeChild(overlay); } catch {}
         unlockResolve();
       } else {
         msg.textContent = 'Incorrect password';
@@ -54,9 +56,11 @@
 
   document.addEventListener('DOMContentLoaded', () => {
     if (unlocked()) {
-      document.getElementById('lock')?.setAttribute('hidden', 'true');
+      const overlay = document.getElementById('lock');
+      overlay?.setAttribute('hidden', 'true');
       const app = document.getElementById('app');
       if (app) app.hidden = false;
+      try { overlay?.parentNode && overlay.parentNode.removeChild(overlay); } catch {}
       unlockResolve();
     } else {
       showLock();
