@@ -745,7 +745,7 @@ function renderTasksPane() {
   if (!root) return;
   root.innerHTML = '';
   const refs = flattenTaskRefs()
-    .sort((a, b) => (b.task.priority || 3) - (a.task.priority || 3));
+    .sort((a, b) => (a.task.priority || 3) - (b.task.priority || 3));
   if (!refs.length) {
     root.append(el('div', { class: 'empty' }, 'No tasks yet.'));
     return;
