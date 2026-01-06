@@ -7,6 +7,18 @@
     <link rel="stylesheet" href="src/styles.css" />
   </head>
   <body>
+    <div id="lock" class="lock-overlay" hidden>
+      <div class="lock-card">
+        <div class="lock-title">DayMX</div>
+        <div class="lock-sub">Enter password to continue</div>
+        <form id="lock-form" class="lock-form" autocomplete="off">
+          <input id="lock-input" type="password" placeholder="Password" required />
+          <label class="lock-remember"><input id="lock-remember" type="checkbox" /> Remember this device</label>
+          <button class="btn primary" type="submit">Unlock</button>
+          <div id="lock-msg" class="lock-msg" role="alert" aria-live="polite"></div>
+        </form>
+      </div>
+    </div>
     <header class="app-header">
       <div class="brand">DayMX</div>
       <nav class="tabs" role="tablist" aria-label="Modes">
@@ -55,6 +67,7 @@
     </div>
 
     <script type="module" src="src/firebase-init.js"></script>
+    <script src="src/lock.js"></script>
     <script src="src/app.js"></script>
   </body>
   </html>

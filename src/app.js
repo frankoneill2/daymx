@@ -688,4 +688,9 @@ function onReviewVisibility() {
   $('#btn-start-review').hidden = false;
 }
 
-document.addEventListener('DOMContentLoaded', init);
+document.addEventListener('DOMContentLoaded', async () => {
+  if (window.daymxUnlockReady) {
+    try { await window.daymxUnlockReady; } catch {}
+  }
+  init();
+});

@@ -111,3 +111,13 @@ body {
 @media (min-width: 720px) {
   .section { padding: 20px; }
 }
+
+/* Lock screen */
+.lock-overlay { position: fixed; inset: 0; z-index: 100; display: grid; place-items: center; background: rgba(0,0,0,.6); backdrop-filter: blur(6px); }
+.lock-card { width: min(92vw, 420px); background: var(--panel); border: 1px solid var(--border); border-radius: 16px; padding: 20px; box-shadow: 0 10px 30px rgba(0,0,0,.4); display: flex; flex-direction: column; gap: 12px; }
+.lock-title { font-size: 22px; font-weight: 800; }
+.lock-sub { color: var(--subtext); }
+.lock-form { display: flex; flex-direction: column; gap: 10px; }
+.lock-form input[type="password"] { padding: 10px; border-radius: 10px; border: 1px solid var(--border); background: transparent; color: var(--text); }
+.lock-remember { display: flex; align-items: center; gap: 8px; color: var(--subtext); font-size: 13px; }
+.lock-msg { min-height: 18px; color: var(--danger); font-size: 13px; }
