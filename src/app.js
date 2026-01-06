@@ -513,8 +513,7 @@ function renderStoryCard() {
     });
     actions.append(editBtn, delBtn);
     top.append(label, actions);
-    const note = el('textarea', { placeholder: 'Notes… (optional, not saved)' });
-    wrap.append(top, note);
+    wrap.append(top);
     qSection.append(wrap);
   }
   // Quick add question in review
