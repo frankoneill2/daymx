@@ -59,17 +59,18 @@ Deploying
 Firebase (Firestore) Setup
 
 - Create a Firebase project and a Web App; copy the config.
-- Enable Authentication → Anonymous sign-in; add `frankoneill2.github.io` to Authorized domains.
-- Enable Firestore (Production mode). Use rules:
+- Enable Firestore (Production mode). For a single shared public document, use rules:
   rules_version = '2';
   service cloud.firestore {
     match /databases/{database}/documents {
-      match /daymx/{uid} {
-        allow read, write: if request.auth != null && request.auth.uid == uid;
+      // Low-stakes: public read/write to a single doc used by the app
+      match /daymx/public {
+        allow read, write: if true;
       }
     }
   }
-- Edit `src/firebase-init.js` to include your config if different.
+- Note: This is intentionally open so your devices can sync without sign-in. Anyone who knows your project ID could modify this doc. For stronger protection, switch to Auth-based rules later.
+- Edit `src/firebase-init.js` only if your Firebase config changes.
 - The app auto-detects Firebase on load; otherwise falls back to localStorage.
 
 License

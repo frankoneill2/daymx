@@ -1,8 +1,8 @@
 // Firebase client initialization for DayMX (ESM via CDN)
-// Uses Anonymous Auth and Firestore. Exposes window.daymxFirebase helpers.
+// Public single-doc mode: no sign-in required; all devices share one doc.
+// Exposes window.daymxFirebase helpers.
 
 import { initializeApp } from 'https://www.gstatic.com/firebasejs/10.13.1/firebase-app.js';
-import { getAuth, onAuthStateChanged, signInAnonymously } from 'https://www.gstatic.com/firebasejs/10.13.1/firebase-auth.js';
 import { getFirestore, enableIndexedDbPersistence, doc, getDoc, setDoc, onSnapshot } from 'https://www.gstatic.com/firebasejs/10.13.1/firebase-firestore.js';
 
 const firebaseConfig = {
@@ -16,54 +16,35 @@ const firebaseConfig = {
 };
 
 const app = initializeApp(firebaseConfig);
-const auth = getAuth(app);
 const db = getFirestore(app);
 
 // Best-effort offline support
 enableIndexedDbPersistence(db).catch(() => {/* ignore multi-tab conflicts */});
 
-function ensureDocRef(user) {
-  const uid = user.uid;
-  const ref = doc(db, 'daymx', uid);
-  return ref;
+// Single shared document path (public). Rules must permit read/write.
+function ensureDocRef() {
+  return doc(db, 'daymx', 'public');
 }
 
-const ready = new Promise((resolve) => {
-  onAuthStateChanged(auth, async (user) => {
-    try {
-      if (!user) {
-        await signInAnonymously(auth);
-        return; // onAuthStateChanged will fire again
-      }
-      resolve(user);
-    } catch (e) {
-      console.warn('Auth error', e);
-      resolve(null);
-    }
-  });
-});
+// Ready is immediate in public mode
+const ready = Promise.resolve(true);
 
 async function getData() {
-  const user = auth.currentUser || await ready;
-  if (!user) return null;
-  const ref = ensureDocRef(user);
+  await ready;
+  const ref = ensureDocRef();
   const snap = await getDoc(ref);
   return snap.exists() ? snap.data() : null;
 }
 
 async function setData(data) {
-  const user = auth.currentUser || await ready;
-  if (!user) return;
-  const ref = ensureDocRef(user);
+  await ready;
+  const ref = ensureDocRef();
   await setDoc(ref, data, { merge: false });
 }
 
 function subscribe(cb) {
-  const user = auth.currentUser;
-  if (!user) return () => {};
-  const ref = ensureDocRef(user);
+  const ref = ensureDocRef();
   return onSnapshot(ref, (snap) => cb(snap.exists() ? snap.data() : null));
 }
 
 window.daymxFirebase = { ready, getData, setData, subscribe };
-
