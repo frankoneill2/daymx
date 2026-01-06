@@ -237,6 +237,13 @@ function availabilityReason(t, now = new Date(), currentContext = null) {
   return '';
 }
 
+function passesContext(t, ctx) {
+  if (!ctx || ctx === 'Any') return true;
+  const arr = Array.isArray(t.contexts) ? t.contexts : [];
+  // Show tasks with no contexts or those that include the selected context
+  return arr.length === 0 || arr.includes(ctx);
+}
+
 // ------------------------------
 // DOM helpers
 // ------------------------------
@@ -940,7 +947,7 @@ function renderTasksPane() {
   const ctx = tasksViewState.currentContext === 'Any' ? null : tasksViewState.currentContext;
   const now = new Date();
   let refs = flattenTaskRefs();
-  const filtered = refs.filter(ref => tasksViewState.showBlocked ? true : isTaskAvailable(ref.task, now, ctx));
+  const filtered = refs.filter(ref => passesContext(ref.task, ctx) && (tasksViewState.showBlocked ? true : isTaskAvailable(ref.task, now, ctx)));
   refs = filtered
     .sort((a, b) => {
       const aa = isTaskAvailable(a.task, now, ctx) ? 0 : 1;
