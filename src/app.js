@@ -1120,7 +1120,7 @@ function renderPantryActiveView() {
   vShop.hidden = active !== ptabShop; vShop.classList.toggle('active', active === ptabShop);
   if (active === ptabPrep) renderPantryPrepare();
   if (active === ptabRev) pantryOnReviewVisibility();
-  if (active === ptabShop) renderShoppingList();
+  if (active === ptabShop) { renderShoppingList(); wireCopyShopping(); }
 }
 
 function renderPantryPrepare() {
@@ -1219,6 +1219,41 @@ function shoppingItems(){ const out=[]; const cats=pantryFlattenCats(); cats.for
 function needsBuying(item){ return item.status === 'to_buy'; }
 function nodePathLike(n){ const names=[]; let cur=n; const all=pantryFlattenCats(); const parent=new Map(); all.forEach(c=> (c.children||[]).forEach(ch=> parent.set(ch.id,c.id))); while(cur){ names.unshift(cur.name); const pid=parent.get(cur.id); cur = pid ? all.find(c=>c.id===pid) : null; } return names.join(' › '); }
 function renderShoppingList(){ const root=$('#shopping-root'); if(!root) return; root.innerHTML=''; const arr=shoppingItems().filter(x=>needsBuying(x.item)); if(!arr.length){ root.append(el('div',{class:'empty'},'Nothing to buy.')); return;} const byCat=new Map(); arr.forEach(({cat,item})=>{ const k=nodePathLike(cat); if(!byCat.has(k)) byCat.set(k,[]); byCat.get(k).push({cat,item}); }); for(const [path,list] of byCat.entries()){ root.append(el('div',{class:'subtext'},path)); list.forEach(({cat,item})=>{ const row=el('div',{class:'task'}); row.classList.add('pantry-to_buy'); const cb=el('input',{type:'checkbox'}); cb.checked=false; cb.addEventListener('change',()=>{ if(cb.checked){ item.status='stocked'; store.saveNow(); renderShoppingList(); }}); const main=el('div',{},item.name); const meta=el('div',{class:'meta'}); const del=el('button',{class:'btn ghost'},'Remove'); del.addEventListener('click',()=>{ cat.items=cat.items.filter(x=>x.id!==item.id); store.saveNow(); renderShoppingList(); renderPantryPrepare(); }); meta.append(del); row.append(cb, main, meta); root.append(row); }); }
+}
+
+function buildShoppingText(){
+  const arr = shoppingItems().filter(x=>needsBuying(x.item));
+  if (!arr.length) return 'Nothing to buy.';
+  const byCat = new Map();
+  arr.forEach(({cat,item})=>{ const k=nodePathLike(cat); if(!byCat.has(k)) byCat.set(k,[]); byCat.get(k).push(item); });
+  const sections = [];
+  for (const [path, items] of byCat.entries()){
+    sections.push(path);
+    items.forEach(it => sections.push(`- ${it.name}`));
+    sections.push('');
+  }
+  return sections.join('\n').trim();
+}
+
+function wireCopyShopping(){
+  const btn = $('#btn-copy-shopping');
+  if (!btn) return;
+  btn.onclick = async () => {
+    const text = buildShoppingText();
+    try {
+      await navigator.clipboard.writeText(text);
+      const prev = btn.textContent; btn.textContent = 'Copied!';
+      setTimeout(()=>{ btn.textContent = prev; }, 1200);
+    } catch (e) {
+      // Fallback
+      const ta = document.createElement('textarea');
+      ta.value = text; document.body.appendChild(ta); ta.select();
+      try { document.execCommand('copy'); } catch {}
+      document.body.removeChild(ta);
+      const prev = btn.textContent; btn.textContent = 'Copied!';
+      setTimeout(()=>{ btn.textContent = prev; }, 1200);
+    }
+  };
 }
 let tasksViewState = { currentContext: 'Any', showBlocked: false };
 
