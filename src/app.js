@@ -92,7 +92,7 @@ const store = {
 // Data helpers
 // ------------------------------
 function createNode(name = 'Untitled') {
-  return { id: uid('node'), name, enabled: true, children: [], questions: [], tasks: [] };
+  return { id: uid('node'), name, enabled: true, collapsed: false, children: [], questions: [], tasks: [] };
 }
 
 function createQuestion(text = '') {
@@ -105,7 +105,7 @@ function createTask(text = '') {
 
 // Pantry creators
 function createCategory(name = 'Category') {
-  return { id: uid('cat'), name, enabled: true, children: [], items: [] };
+  return { id: uid('cat'), name, enabled: true, collapsed: false, children: [], items: [] };
 }
 
 function createItem(name = 'Item') {
@@ -152,6 +152,61 @@ function isNodePathEnabled(node) {
     cur = p;
   }
   return true;
+}
+
+// Reordering helpers (main threads)
+function moveNode(nodeId, delta) {
+  const info = findNodeParentInfo(nodeId);
+  if (!info) return;
+  const { list, index } = info;
+  const j = index + delta;
+  if (j < 0 || j >= list.length) return;
+  const tmp = list[index]; list[index] = list[j]; list[j] = tmp;
+  store.save(); renderThreads();
+}
+
+function findNodeParentInfo(targetId) {
+  const roots = store.data.threads;
+  if (!roots) return null;
+  // check top-level
+  const idxTop = roots.findIndex(n => n.id === targetId);
+  if (idxTop >= 0) return { parent: null, list: roots, index: idxTop };
+  // DFS
+  const stack = [...roots];
+  while (stack.length) {
+    const n = stack.pop();
+    const kids = n.children || [];
+    const idx = kids.findIndex(c => c.id === targetId);
+    if (idx >= 0) return { parent: n, list: kids, index: idx };
+    stack.push(...kids);
+  }
+  return null;
+}
+
+// Reordering helpers (pantry categories)
+function moveCategory(catId, delta) {
+  const info = findCategoryParentInfo(catId);
+  if (!info) return;
+  const { list, index } = info;
+  const j = index + delta;
+  if (j < 0 || j >= list.length) return;
+  const tmp = list[index]; list[index] = list[j]; list[j] = tmp;
+  store.saveNow(); renderPantryPrepare();
+}
+
+function findCategoryParentInfo(targetId) {
+  const roots = store.data.pantry?.categories || [];
+  const idxTop = roots.findIndex(c => c.id === targetId);
+  if (idxTop >= 0) return { parent: null, list: roots, index: idxTop };
+  const stack = [...roots];
+  while (stack.length) {
+    const c = stack.pop();
+    const kids = c.children || [];
+    const idx = kids.findIndex(ch => ch.id === targetId);
+    if (idx >= 0) return { parent: c, list: kids, index: idx };
+    stack.push(...kids);
+  }
+  return null;
 }
 
 // ------------------------------
@@ -211,6 +266,7 @@ function normalizeNode(n) {
   n.tasks = Array.isArray(n.tasks) ? n.tasks : [];
   n.name = n.name || 'Untitled';
   if (typeof n.enabled !== 'boolean') n.enabled = true;
+  if (typeof n.collapsed !== 'boolean') n.collapsed = false;
   n.tasks.forEach(t => {
     if (typeof t.completed !== 'boolean') t.completed = !!t.completed;
     if (typeof t.priority !== 'number' || t.priority < 1 || t.priority > 5) t.priority = 3;
@@ -227,6 +283,7 @@ function normalizeCategory(c) {
   c.items = Array.isArray(c.items) ? c.items : [];
   c.name = c.name || 'Category';
   if (typeof c.enabled !== 'boolean') c.enabled = true;
+  if (typeof c.collapsed !== 'boolean') c.collapsed = false;
   c.items.forEach(it => {
     if (!it.id) it.id = uid('i');
     if (!it.name) it.name = 'Item';
@@ -402,8 +459,10 @@ function renderNode(node) {
   const container = el('div', { class: 'node', 'data-id': node.id });
   const header = el('div', { class: 'node-header' });
   const titleWrap = el('div', { class: 'node-title' });
+  const caret = el('button', { class: 'btn ghost', title: 'Collapse/Expand' }, node.collapsed ? '▸' : '▾');
+  caret.addEventListener('click', () => { node.collapsed = !node.collapsed; store.save(); renderThreads(); });
   const colorDot = el('span', { style: `display:inline-block;width:10px;height:10px;border-radius:999px;background:${node.color || '#666'};margin-right:6px;vertical-align:middle;` });
-  titleWrap.append(colorDot, document.createTextNode(node.name || 'Untitled'));
+  titleWrap.append(caret, colorDot, document.createTextNode(node.name || 'Untitled'));
   const actions = el('div', { class: 'node-actions' });
 
   const btnRename = el('button', { class: 'btn ghost' }, 'Rename');
@@ -431,11 +490,15 @@ function renderNode(node) {
 
   const btnTasks = el('button', { class: 'btn ghost' }, 'Tasks');
   btnTasks.addEventListener('click', () => openTasksModal(node.id));
+  const moveUp = el('button', { class: 'btn ghost', title: 'Move up' }, '↑');
+  moveUp.addEventListener('click', ()=>{ moveNode(node.id, -1); });
+  const moveDown = el('button', { class: 'btn ghost', title: 'Move down' }, '↓');
+  moveDown.addEventListener('click', ()=>{ moveNode(node.id, +1); });
   const enabledToggle = el('label', { class: 'subtext' });
   const en = el('input', { type: 'checkbox' }); en.checked = node.enabled !== false; en.addEventListener('change', ()=>{ node.enabled = en.checked; store.save(); renderThreads(); });
   enabledToggle.append(en, document.createTextNode(' Enabled'));
 
-  actions.append(btnRename, btnAddChild, btnQuestions, btnTasks, enabledToggle);
+  actions.append(moveUp, moveDown, btnRename, btnAddChild, btnQuestions, btnTasks, enabledToggle);
   header.append(titleWrap, actions);
   container.append(header);
 
@@ -535,6 +598,7 @@ function renderNode(node) {
 
   if (node.children.length) {
     const kids = el('div', { class: 'node-children' });
+    kids.hidden = !!node.collapsed;
     for (const child of node.children) kids.append(renderNode(child));
     container.append(kids);
   }
@@ -1072,16 +1136,23 @@ function renderPantryPrepare() {
 function renderPantryCategory(cat) {
   const container = el('div', { class: 'node', 'data-id': cat.id });
   const header = el('div', { class: 'node-header' });
-  const title = el('div', { class: 'node-title' }, cat.name);
+  const title = el('div', { class: 'node-title' });
+  const caret = el('button', { class: 'btn ghost', title: 'Collapse/Expand' }, cat.collapsed ? '▸' : '▾');
+  caret.addEventListener('click', ()=>{ cat.collapsed = !cat.collapsed; store.saveNow(); renderPantryPrepare(); });
+  title.append(caret, document.createTextNode(cat.name));
   const actions = el('div', { class: 'node-actions' });
   const rename = el('button', { class: 'btn ghost' }, 'Rename');
   rename.addEventListener('click', () => { const n = confirmName('Rename category', cat.name); if (!n) return; cat.name = n; store.saveNow(); renderPantryPrepare(); });
   const addSub = el('button', { class: 'btn ghost' }, '+ Subcategory');
+  const moveUp = el('button', { class: 'btn ghost', title: 'Move up' }, '↑');
+  moveUp.addEventListener('click', ()=>{ moveCategory(cat.id, -1); });
+  const moveDown = el('button', { class: 'btn ghost', title: 'Move down' }, '↓');
+  moveDown.addEventListener('click', ()=>{ moveCategory(cat.id, +1); });
   addSub.addEventListener('click', () => { const n = confirmName('New subcategory', ''); if (!n) return; cat.children.push(createCategory(n)); store.saveNow(); renderPantryPrepare(); });
   const enabledToggle = el('label', { class: 'subtext' });
   const en = el('input', { type: 'checkbox' }); en.checked = cat.enabled !== false; en.addEventListener('change', ()=>{ cat.enabled = en.checked; store.saveNow(); renderPantryPrepare(); });
   enabledToggle.append(en, document.createTextNode(' Enabled'));
-  actions.append(rename, addSub, enabledToggle);
+  actions.append(moveUp, moveDown, rename, addSub, enabledToggle);
   header.append(title, actions);
   container.append(header);
   const meta = el('div', { class: 'subtext' }, `${(cat.children||[]).length} sub, ${(cat.items||[]).length} items`);
@@ -1089,6 +1160,7 @@ function renderPantryCategory(cat) {
   container.classList.toggle('disabled', cat.enabled === false);
 
   const list = el('div', { class: 'inline-list' });
+  list.hidden = !!cat.collapsed;
   (cat.items||[]).forEach(item => {
     const row = el('div', { class: 'inline-item' });
     const top = el('div', { class: 'kv' });
@@ -1118,6 +1190,7 @@ function renderPantryCategory(cat) {
 
   if ((cat.children||[]).length) {
     const kids = el('div', { class: 'node-children' });
+    kids.hidden = !!cat.collapsed;
     cat.children.forEach(ch => kids.append(renderPantryCategory(ch)));
     container.append(kids);
   }
