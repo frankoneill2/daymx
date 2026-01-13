@@ -107,7 +107,7 @@ function createCategory(name = 'Category') {
 }
 
 function createItem(name = 'Item') {
-  return { id: uid('i'), name, status: 'stocked', unit: 'unit', par: 1, qtyOnHand: 1, notes: '' };
+  return { id: uid('i'), name, status: 'stocked', notes: '' };
 }
 
 function findNodeById(rootList, id) {
@@ -212,9 +212,6 @@ function normalizeCategory(c) {
     if (!it.id) it.id = uid('i');
     if (!it.name) it.name = 'Item';
     if (!['to_buy','stocked','not_needed'].includes(it.status)) it.status = 'stocked';
-    it.unit = it.unit || 'unit';
-    it.par = typeof it.par === 'number' && it.par >= 0 ? it.par : 1;
-    it.qtyOnHand = typeof it.qtyOnHand === 'number' && it.qtyOnHand >= 0 ? it.qtyOnHand : it.par;
     it.notes = it.notes || '';
   });
   c.children.forEach(normalizeCategory);
@@ -1009,28 +1006,19 @@ function renderPantryCategory(cat) {
   (cat.items||[]).forEach(item => {
     const row = el('div', { class: 'inline-item' });
     const top = el('div', { class: 'kv' });
-    const label = el('div', {}, `${item.name} (${item.qtyOnHand}/${item.par} ${item.unit})`);
+    const label = el('div', {}, `${item.name}`);
     const actions = el('div', { class: 'meta' });
     const status = el('select', { class: 'priority-select' });
     [['to_buy','To buy'],['stocked','Stocked'],['not_needed','Not needed']].forEach(([v,t])=> status.append(el('option',{value:v},t)));
     status.value = item.status;
     status.addEventListener('change', ()=>{ item.status = status.value; store.saveNow(); renderPantryPrepare(); });
-    const inc = el('button', { class: 'btn ghost' }, '+');
-    inc.addEventListener('click', ()=>{ item.qtyOnHand = (item.qtyOnHand||0)+1; if (item.status!=='not_needed' && item.qtyOnHand>=item.par) item.status='stocked'; store.saveNow(); renderPantryPrepare(); });
-    const dec = el('button', { class: 'btn ghost' }, '−');
-    dec.addEventListener('click', ()=>{ item.qtyOnHand = Math.max(0,(item.qtyOnHand||0)-1); if (item.status!=='not_needed' && item.qtyOnHand<item.par) item.status='to_buy'; store.saveNow(); renderPantryPrepare(); });
     const edit = el('button', { class: 'btn ghost' }, 'Edit');
     edit.addEventListener('click', ()=>{ const n = confirmName('Edit item name', item.name); if (n!=null && n.trim()) { item.name = n.trim(); store.saveNow(); renderPantryPrepare(); }});
     const del = el('button', { class: 'btn ghost' }, 'Remove');
     del.addEventListener('click', ()=>{ cat.items = cat.items.filter(x=>x.id!==item.id); store.saveNow(); renderPantryPrepare(); });
-    actions.append(status, dec, inc, edit, del);
+    actions.append(status, edit, del);
     top.append(label, actions);
-
-    const controls = el('div', { class: 'availability' });
-    const r1 = el('div', { class: 'row' }); r1.append(el('div',{class:'subtext'},'Par')); const ipPar = el('input',{type:'number', min:'0'}); ipPar.value = item.par; ipPar.addEventListener('change',()=>{ item.par=Math.max(0,Number(ipPar.value||0)); if(item.status!=='not_needed'&&item.qtyOnHand<item.par) item.status='to_buy'; store.saveNow(); renderPantryPrepare(); }); r1.append(ipPar, el('div'));
-    const r2 = el('div', { class: 'row' }); r2.append(el('div',{class:'subtext'},'Unit')); const ipUnit = el('input',{type:'text'}); ipUnit.value=item.unit; ipUnit.addEventListener('change',()=>{ item.unit=ipUnit.value.trim()||'unit'; store.saveNow(); }); r2.append(ipUnit, el('div'));
-    controls.append(r1, r2);
-    row.append(top, controls);
+    row.append(top);
     list.append(row);
   });
   const addRow = el('div', { class: 'add-row' });
@@ -1054,16 +1042,16 @@ function pantryFlattenCats(){ const out=[]; const walk=list=>{ (list||[]).forEac
 function startPantryReview(){ const list=pantryFlattenCats(); pantryReviewState={ids:list.map(c=>c.id), idx:0}; if(!list.length){ $('#pantry-review-empty').hidden=false; $('#pantry-review-stage').hidden=true; return;} $('#pantry-review-empty').hidden=true; $('#pantry-review-stage').hidden=false; renderPantryProgress(); renderPantryCard(); }
 function findCategoryById(id){ const stack=[...(store.data.pantry?.categories||[])]; while(stack.length){ const c=stack.pop(); if(c.id===id) return c; (c.children||[]).forEach(x=>stack.push(x)); } return null; }
 function renderPantryProgress(){ const bar=$('#pprogress'); bar.innerHTML=''; const total=pantryReviewState.ids.length||1; for(let i=0;i<total;i++){ const seg=el('div',{class:'segment'}); const fill=el('div',{class:'fill'}); if(i<pantryReviewState.idx) seg.classList.add('done'); if(i===pantryReviewState.idx) seg.classList.add('current'); seg.append(fill); bar.append(seg);} const cur=bar.querySelector('.segment.current .fill'); if(cur) cur.style.setProperty('--w','100%'); }
-function renderPantryCard(){ const c=findCategoryById(pantryReviewState.ids[pantryReviewState.idx]); const card=$('#pcard'); card.innerHTML=''; if(!c){ card.append(el('div',{class:'empty'},'Review complete.')); return;} const header=el('div',{class:'story-header'}); header.append(el('div',{class:'story-title'},c.name)); card.append(header); (c.items||[]).forEach(item=>{ const row=el('div',{class:'task'}); const status=el('select',{class:'priority-select'}); [['to_buy','To buy'],['stocked','Stocked'],['not_needed','Not needed']].forEach(([v,t])=>status.append(el('option',{value:v},t))); status.value=item.status; status.addEventListener('change',()=>{ item.status=status.value; store.saveNow(); renderPantryCard(); }); const title=el('div',{},item.name); const meta=el('div',{class:'meta'}); const dec=el('button',{class:'btn ghost'},'−'); const inc=el('button',{class:'btn ghost'},'+'); dec.addEventListener('click',()=>{ item.qtyOnHand=Math.max(0,(item.qtyOnHand||0)-1); if(item.status!=='not_needed'&&item.qtyOnHand<item.par) item.status='to_buy'; store.saveNow(); renderPantryCard(); }); inc.addEventListener('click',()=>{ item.qtyOnHand=(item.qtyOnHand||0)+1; if(item.status!=='not_needed'&&item.qtyOnHand>=item.par) item.status='stocked'; store.saveNow(); renderPantryCard(); }); const parInput=el('input',{type:'number',min:'0'}); parInput.value=item.par; parInput.addEventListener('change',()=>{ item.par=Math.max(0,Number(parInput.value||0)); if(item.status!=='not_needed'&&item.qtyOnHand<item.par) item.status='to_buy'; store.saveNow(); renderPantryCard(); }); meta.append(status, dec, inc, el('span',{class:'pill'},`${item.qtyOnHand}/${item.par} ${item.unit}`), parInput); row.append(el('div'), title, meta); card.append(row); }); }
+function renderPantryCard(){ const c=findCategoryById(pantryReviewState.ids[pantryReviewState.idx]); const card=$('#pcard'); card.innerHTML=''; if(!c){ card.append(el('div',{class:'empty'},'Review complete.')); return;} const header=el('div',{class:'story-header'}); header.append(el('div',{class:'story-title'},c.name)); card.append(header); (c.items||[]).forEach(item=>{ const row=el('div',{class:'task'}); const status=el('select',{class:'priority-select'}); [['to_buy','To buy'],['stocked','Stocked'],['not_needed','Not needed']].forEach(([v,t])=>status.append(el('option',{value:v},t))); status.value=item.status; status.addEventListener('change',()=>{ item.status=status.value; store.saveNow(); renderPantryCard(); }); const title=el('div',{},item.name); const meta=el('div',{class:'meta'}); meta.append(status); row.append(el('div'), title, meta); card.append(row); }); }
 function pantryNext(){ if(pantryReviewState.idx<pantryReviewState.ids.length-1){ pantryReviewState.idx++; renderPantryProgress(); renderPantryCard(); } else { $('#pantry-review-stage').hidden=true; const e=$('#pantry-review-empty'); e.textContent='Review complete.'; e.hidden=false; } }
 function pantryPrev(){ if(pantryReviewState.idx>0){ pantryReviewState.idx--; renderPantryProgress(); renderPantryCard(); } }
 function pantryOnReviewVisibility(){ const list=pantryFlattenCats(); const has=list.length>0; const e=$('#pantry-review-empty'); e.textContent = has ? 'Press Start Review to begin.' : 'No categories/items yet. Add some in Prepare.'; e.hidden=false; $('#pantry-review-stage').hidden=true; }
 
 // Pantry shopping list
 function shoppingItems(){ const out=[]; const cats=pantryFlattenCats(); cats.forEach(c=> (c.items||[]).forEach(it=> out.push({cat:c,item:it})) ); return out; }
-function needsBuying(item){ if(item.status==='not_needed') return false; if(item.status==='to_buy') return true; return (item.qtyOnHand||0) < (item.par||0); }
+function needsBuying(item){ return item.status === 'to_buy'; }
 function nodePathLike(n){ const names=[]; let cur=n; const all=pantryFlattenCats(); const parent=new Map(); all.forEach(c=> (c.children||[]).forEach(ch=> parent.set(ch.id,c.id))); while(cur){ names.unshift(cur.name); const pid=parent.get(cur.id); cur = pid ? all.find(c=>c.id===pid) : null; } return names.join(' › '); }
-function renderShoppingList(){ const root=$('#shopping-root'); if(!root) return; root.innerHTML=''; const arr=shoppingItems().filter(x=>needsBuying(x.item)); if(!arr.length){ root.append(el('div',{class:'empty'},'Nothing to buy.')); return;} const byCat=new Map(); arr.forEach(({cat,item})=>{ const k=nodePathLike(cat); if(!byCat.has(k)) byCat.set(k,[]); byCat.get(k).push({cat,item}); }); for(const [path,list] of byCat.entries()){ root.append(el('div',{class:'subtext'},path)); list.forEach(({cat,item})=>{ const row=el('div',{class:'task'}); const cb=el('input',{type:'checkbox'}); cb.checked=false; cb.addEventListener('change',()=>{ if(cb.checked){ item.status='stocked'; item.qtyOnHand=item.par; store.saveNow(); renderShoppingList(); }}); const main=el('div',{},item.name); const meta=el('div',{class:'meta'}); meta.append(el('span',{class:'pill'},`${Math.max(0,(item.par||0)-(item.qtyOnHand||0))} ${item.unit} needed`)); const dec=el('button',{class:'btn ghost'},'−'); const inc=el('button',{class:'btn ghost'},'+'); dec.addEventListener('click',()=>{ item.qtyOnHand=Math.max(0,(item.qtyOnHand||0)-1); if(item.qtyOnHand<item.par) item.status='to_buy'; store.saveNow(); renderShoppingList(); }); inc.addEventListener('click',()=>{ item.qtyOnHand=(item.qtyOnHand||0)+1; if(item.qtyOnHand>=item.par) item.status='stocked'; store.saveNow(); renderShoppingList(); }); const del=el('button',{class:'btn ghost'},'Remove'); del.addEventListener('click',()=>{ cat.items=cat.items.filter(x=>x.id!==item.id); store.saveNow(); renderShoppingList(); renderPantryPrepare(); }); meta.append(dec,inc,del); row.append(cb, main, meta); root.append(row); }); }
+function renderShoppingList(){ const root=$('#shopping-root'); if(!root) return; root.innerHTML=''; const arr=shoppingItems().filter(x=>needsBuying(x.item)); if(!arr.length){ root.append(el('div',{class:'empty'},'Nothing to buy.')); return;} const byCat=new Map(); arr.forEach(({cat,item})=>{ const k=nodePathLike(cat); if(!byCat.has(k)) byCat.set(k,[]); byCat.get(k).push({cat,item}); }); for(const [path,list] of byCat.entries()){ root.append(el('div',{class:'subtext'},path)); list.forEach(({cat,item})=>{ const row=el('div',{class:'task'}); const cb=el('input',{type:'checkbox'}); cb.checked=false; cb.addEventListener('change',()=>{ if(cb.checked){ item.status='stocked'; store.saveNow(); renderShoppingList(); }}); const main=el('div',{},item.name); const meta=el('div',{class:'meta'}); const del=el('button',{class:'btn ghost'},'Remove'); del.addEventListener('click',()=>{ cat.items=cat.items.filter(x=>x.id!==item.id); store.saveNow(); renderShoppingList(); renderPantryPrepare(); }); meta.append(del); row.append(cb, main, meta); root.append(row); }); }
 }
 let tasksViewState = { currentContext: 'Any', showBlocked: false };
 
