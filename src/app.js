@@ -4,6 +4,7 @@
 // Persistence
 // ------------------------------
 const STORAGE_KEY = 'daymx-data-v1';
+const REVIEW_STATE_KEY = 'daymx-review-state-v1';
 
 function uid(prefix = 'id') {
   return `${prefix}_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 7)}`;
@@ -595,6 +596,50 @@ let reviewState = {
   idx: 0,
 };
 
+function saveReviewProgress() {
+  try {
+    if (!reviewState.ids.length) { localStorage.removeItem(REVIEW_STATE_KEY); return; }
+    const payload = {
+      active: true,
+      idx: reviewState.idx,
+      currentId: reviewState.ids[reviewState.idx] || null,
+    };
+    localStorage.setItem(REVIEW_STATE_KEY, JSON.stringify(payload));
+  } catch {}
+}
+
+function clearReviewProgress() {
+  try { localStorage.removeItem(REVIEW_STATE_KEY); } catch {}
+}
+
+function restoreReviewProgressIfAny() {
+  try {
+    const raw = localStorage.getItem(REVIEW_STATE_KEY);
+    if (!raw) return false;
+    const saved = JSON.parse(raw);
+    if (!saved || !saved.active) return false;
+    const nodes = subthreadsForReview();
+    const ids = nodes.map(n => n.id);
+    if (!ids.length) return false;
+    let idx = Math.min(Math.max(0, saved.idx || 0), ids.length - 1);
+    if (saved.currentId) {
+      const j = ids.indexOf(saved.currentId);
+      if (j >= 0) idx = j;
+    }
+    reviewState = { ids, idx };
+    // ensure review view visible
+    switchView('review');
+    $('#review-empty').hidden = true;
+    $('#review-stage').hidden = false;
+    $('#btn-start-review').hidden = true;
+    renderProgress();
+    renderStoryCard();
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 function startReview() {
   // ensure latest structure is indexed
   recomputeIndexes();
@@ -611,6 +656,7 @@ function startReview() {
   $('#btn-start-review').hidden = true;
   renderProgress();
   renderStoryCard();
+  saveReviewProgress();
 }
 
 function renderProgress() {
@@ -785,7 +831,7 @@ function renderStoryCard() {
 
 function nextStory() {
   if (reviewState.idx < reviewState.ids.length - 1) {
-    reviewState.idx += 1; renderProgress(); renderStoryCard();
+    reviewState.idx += 1; renderProgress(); renderStoryCard(); saveReviewProgress();
   } else {
     // End of review: hide stage, show start button and a completion message
     $('#review-stage').hidden = true;
@@ -793,12 +839,13 @@ function nextStory() {
     msg.textContent = 'Review complete. Press Start Review to run again.';
     msg.hidden = false;
     $('#btn-start-review').hidden = false;
+    clearReviewProgress();
   }
 }
 
 function prevStory() {
   if (reviewState.idx > 0) {
-    reviewState.idx -= 1; renderProgress(); renderStoryCard();
+    reviewState.idx -= 1; renderProgress(); renderStoryCard(); saveReviewProgress();
   }
 }
 
@@ -872,6 +919,8 @@ async function init() {
   onReviewVisibility();
   // Pre-render tasks pane if selected later
   // No-op here; render on switch
+  // Restore review if previously active
+  restoreReviewProgressIfAny();
 }
 
 function switchView(name) {
