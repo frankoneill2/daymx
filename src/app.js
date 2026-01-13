@@ -5,6 +5,7 @@
 // ------------------------------
 const STORAGE_KEY = 'daymx-data-v1';
 const REVIEW_STATE_KEY = 'daymx-review-state-v1';
+const PANTRY_REVIEW_STATE_KEY = 'daymx-pantry-review-state-v1';
 
 function uid(prefix = 'id') {
   return `${prefix}_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 7)}`;
@@ -919,8 +920,10 @@ async function init() {
   onReviewVisibility();
   // Pre-render tasks pane if selected later
   // No-op here; render on switch
-  // Restore review if previously active
-  restoreReviewProgressIfAny();
+  // Restore review if previously active (main), else try pantry review
+  if (!restoreReviewProgressIfAny()) {
+    restorePantryReviewProgressIfAny();
+  }
 }
 
 function switchView(name) {
@@ -1088,13 +1091,19 @@ function renderPantryCategory(cat) {
 // Pantry review
 let pantryReviewState = { ids: [], idx: 0 };
 function pantryFlattenCats(){ const out=[]; const walk=list=>{ (list||[]).forEach(c=>{ out.push(c); if(c.children?.length) walk(c.children); }); }; walk(store.data.pantry?.categories||[]); return out; }
-function startPantryReview(){ const list=pantryFlattenCats(); pantryReviewState={ids:list.map(c=>c.id), idx:0}; if(!list.length){ $('#pantry-review-empty').hidden=false; $('#pantry-review-stage').hidden=true; return;} $('#pantry-review-empty').hidden=true; $('#pantry-review-stage').hidden=false; renderPantryProgress(); renderPantryCard(); }
+function startPantryReview(){ const list=pantryFlattenCats(); pantryReviewState={ids:list.map(c=>c.id), idx:0}; if(!list.length){ $('#pantry-review-empty').hidden=false; $('#pantry-review-stage').hidden=true; return;} $('#pantry-review-empty').hidden=true; $('#pantry-review-stage').hidden=false; renderPantryProgress(); renderPantryCard(); savePantryReviewProgress(); }
 function findCategoryById(id){ const stack=[...(store.data.pantry?.categories||[])]; while(stack.length){ const c=stack.pop(); if(c.id===id) return c; (c.children||[]).forEach(x=>stack.push(x)); } return null; }
 function renderPantryProgress(){ const bar=$('#pprogress'); bar.innerHTML=''; const total=pantryReviewState.ids.length||1; for(let i=0;i<total;i++){ const seg=el('div',{class:'segment'}); const fill=el('div',{class:'fill'}); if(i<pantryReviewState.idx) seg.classList.add('done'); if(i===pantryReviewState.idx) seg.classList.add('current'); seg.append(fill); bar.append(seg);} const cur=bar.querySelector('.segment.current .fill'); if(cur) cur.style.setProperty('--w','100%'); }
 function renderPantryCard(){ const c=findCategoryById(pantryReviewState.ids[pantryReviewState.idx]); const card=$('#pcard'); card.innerHTML=''; if(!c){ card.append(el('div',{class:'empty'},'Review complete.')); return;} const header=el('div',{class:'story-header'}); header.append(el('div',{class:'story-title'},c.name)); card.append(header); (c.items||[]).forEach(item=>{ const row=el('div',{class:'task'}); const status=el('select',{class:'priority-select'}); [['to_buy','To buy'],['stocked','Stocked'],['not_needed','Not needed']].forEach(([v,t])=>status.append(el('option',{value:v},t))); status.value=item.status; status.addEventListener('change',()=>{ item.status=status.value; store.saveNow(); renderPantryCard(); }); const title=el('div',{},item.name); const meta=el('div',{class:'meta'}); meta.append(status); row.append(el('div'), title, meta); card.append(row); }); }
-function pantryNext(){ if(pantryReviewState.idx<pantryReviewState.ids.length-1){ pantryReviewState.idx++; renderPantryProgress(); renderPantryCard(); } else { $('#pantry-review-stage').hidden=true; const e=$('#pantry-review-empty'); e.textContent='Review complete.'; e.hidden=false; } }
-function pantryPrev(){ if(pantryReviewState.idx>0){ pantryReviewState.idx--; renderPantryProgress(); renderPantryCard(); } }
+function pantryNext(){ if(pantryReviewState.idx<pantryReviewState.ids.length-1){ pantryReviewState.idx++; renderPantryProgress(); renderPantryCard(); savePantryReviewProgress(); } else { $('#pantry-review-stage').hidden=true; const e=$('#pantry-review-empty'); e.textContent='Review complete.'; e.hidden=false; clearPantryReviewProgress(); } }
+function pantryPrev(){ if(pantryReviewState.idx>0){ pantryReviewState.idx--; renderPantryProgress(); renderPantryCard(); savePantryReviewProgress(); } }
 function pantryOnReviewVisibility(){ const list=pantryFlattenCats(); const has=list.length>0; const e=$('#pantry-review-empty'); e.textContent = has ? 'Press Start Review to begin.' : 'No categories/items yet. Add some in Prepare.'; e.hidden=false; $('#pantry-review-stage').hidden=true; }
+
+// Pantry review persistence
+function savePantryReviewProgress(){ try { if(!pantryReviewState.ids.length){ localStorage.removeItem(PANTRY_REVIEW_STATE_KEY); return; } const payload={ active:true, idx:pantryReviewState.idx, currentId: pantryReviewState.ids[pantryReviewState.idx]||null }; localStorage.setItem(PANTRY_REVIEW_STATE_KEY, JSON.stringify(payload)); } catch {} }
+function clearPantryReviewProgress(){ try { localStorage.removeItem(PANTRY_REVIEW_STATE_KEY); } catch {} }
+function restorePantryReviewProgressIfAny(){ try { const raw=localStorage.getItem(PANTRY_REVIEW_STATE_KEY); if(!raw) return false; const saved=JSON.parse(raw); if(!saved||!saved.active) return false; const list=pantryFlattenCats(); const ids=list.map(c=>c.id); if(!ids.length) return false; let idx=Math.min(Math.max(0, saved.idx||0), ids.length-1); if(saved.currentId){ const j=ids.indexOf(saved.currentId); if(j>=0) idx=j; } pantryReviewState={ids, idx}; // switch into pantry review
+  switchView('pantry'); const ptabRev=$('#ptab-review'); const ptabPrep=$('#ptab-prepare'); const ptabShop=$('#ptab-shopping'); ptabRev.classList.add('active'); ptabPrep.classList.remove('active'); ptabShop.classList.remove('active'); $('#pantry-review-empty').hidden=true; $('#pantry-review-stage').hidden=false; renderPantryProgress(); renderPantryCard(); return true; } catch { return false; } }
 
 // Pantry shopping list
 function shoppingItems(){ const out=[]; const cats=pantryFlattenCats(); cats.forEach(c=> (c.items||[]).forEach(it=> out.push({cat:c,item:it})) ); return out; }
