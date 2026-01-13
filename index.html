@@ -26,6 +26,7 @@
         <button id="tab-prepare" class="tab active" role="tab" aria-selected="true">Prepare</button>
         <button id="tab-review" class="tab" role="tab" aria-selected="false">Review</button>
         <button id="tab-tasks" class="tab" role="tab" aria-selected="false">Tasks</button>
+        <button id="tab-pantry" class="tab" role="tab" aria-selected="false">Pantry</button>
       </nav>
     </header>
 
@@ -65,6 +66,50 @@
         <div class="subtext">Sorted by priority (1 highest)</div>
         <div id="tasks-controls" class="tasks-controls"></div>
         <div id="tasks-root" class="tasks all"></div>
+      </section>
+    </main>
+
+    <main id="view-pantry" class="view" aria-labelledby="tab-pantry" hidden>
+      <section class="section">
+        <div class="section-header">
+          <h1>Pantry</h1>
+        </div>
+        <nav class="tabs" role="tablist" aria-label="Pantry Modes">
+          <button id="ptab-prepare" class="tab active" role="tab" aria-selected="true">Prepare</button>
+          <button id="ptab-review" class="tab" role="tab" aria-selected="false">Review</button>
+          <button id="ptab-shopping" class="tab" role="tab" aria-selected="false">Shopping List</button>
+        </nav>
+
+        <div id="pantry-prepare" class="pview active">
+          <div class="section-header" style="margin-top:10px;">
+            <h1>Categories</h1>
+            <button id="btn-add-category" class="btn primary">Add Category</button>
+          </div>
+          <div id="pantry-prepare-root" class="threads"></div>
+        </div>
+
+        <div id="pantry-review" class="pview" hidden>
+          <div class="section-header" style="margin-top:10px;">
+            <h1>Pantry Review</h1>
+            <button id="btn-start-pantry-review" class="btn primary">Start Review</button>
+          </div>
+          <div id="pantry-review-empty" class="empty">No categories/items yet. Add some in Prepare.</div>
+          <div id="pantry-review-stage" class="review-stage" hidden>
+            <div id="pprogress" class="story-progress" aria-hidden="true"></div>
+            <div id="pcard" class="story-card" role="region" aria-live="polite"></div>
+            <div class="story-controls">
+              <button id="pbtn-prev" class="btn ghost">Prev</button>
+              <button id="pbtn-next" class="btn primary grow">Next</button>
+            </div>
+          </div>
+        </div>
+
+        <div id="pantry-shopping" class="pview" hidden>
+          <div class="section-header" style="margin-top:10px;">
+            <h1>Shopping List</h1>
+          </div>
+          <div id="shopping-root" class="tasks all"></div>
+        </div>
       </section>
     </main>
 
