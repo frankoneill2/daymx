@@ -92,7 +92,7 @@ const store = {
 // Data helpers
 // ------------------------------
 function createNode(name = 'Untitled') {
-  return { id: uid('node'), name, children: [], questions: [], tasks: [] };
+  return { id: uid('node'), name, enabled: true, children: [], questions: [], tasks: [] };
 }
 
 function createQuestion(text = '') {
@@ -105,7 +105,7 @@ function createTask(text = '') {
 
 // Pantry creators
 function createCategory(name = 'Category') {
-  return { id: uid('cat'), name, children: [], items: [] };
+  return { id: uid('cat'), name, enabled: true, children: [], items: [] };
 }
 
 function createItem(name = 'Item') {
@@ -136,7 +136,22 @@ function flattenNodes(rootList) {
 // Consider every node a "subthread" for review. If you want only leaves, filter by !children.length
 function subthreadsForReview() {
   const nodes = flattenNodes(store.data.threads);
-  return nodes; // change to nodes.filter(n => n.children.length === 0) to only include leaves
+  return nodes.filter(isNodePathEnabled); // change to filter leaves if preferred
+}
+
+function isNodePathEnabled(node) {
+  if (!node) return false;
+  if (node.enabled === false) return false;
+  let cur = node;
+  while (true) {
+    const pid = parentById.get(cur.id);
+    if (!pid) break;
+    const p = nodeById.get(pid);
+    if (!p) break;
+    if (p.enabled === false) return false;
+    cur = p;
+  }
+  return true;
 }
 
 // ------------------------------
@@ -195,6 +210,7 @@ function normalizeNode(n) {
   n.questions = Array.isArray(n.questions) ? n.questions : [];
   n.tasks = Array.isArray(n.tasks) ? n.tasks : [];
   n.name = n.name || 'Untitled';
+  if (typeof n.enabled !== 'boolean') n.enabled = true;
   n.tasks.forEach(t => {
     if (typeof t.completed !== 'boolean') t.completed = !!t.completed;
     if (typeof t.priority !== 'number' || t.priority < 1 || t.priority > 5) t.priority = 3;
@@ -210,6 +226,7 @@ function normalizeCategory(c) {
   c.children = Array.isArray(c.children) ? c.children : [];
   c.items = Array.isArray(c.items) ? c.items : [];
   c.name = c.name || 'Category';
+  if (typeof c.enabled !== 'boolean') c.enabled = true;
   c.items.forEach(it => {
     if (!it.id) it.id = uid('i');
     if (!it.name) it.name = 'Item';
@@ -414,8 +431,11 @@ function renderNode(node) {
 
   const btnTasks = el('button', { class: 'btn ghost' }, 'Tasks');
   btnTasks.addEventListener('click', () => openTasksModal(node.id));
+  const enabledToggle = el('label', { class: 'subtext' });
+  const en = el('input', { type: 'checkbox' }); en.checked = node.enabled !== false; en.addEventListener('change', ()=>{ node.enabled = en.checked; store.save(); renderThreads(); });
+  enabledToggle.append(en, document.createTextNode(' Enabled'));
 
-  actions.append(btnRename, btnAddChild, btnQuestions, btnTasks);
+  actions.append(btnRename, btnAddChild, btnQuestions, btnTasks, enabledToggle);
   header.append(titleWrap, actions);
   container.append(header);
 
@@ -423,6 +443,7 @@ function renderNode(node) {
   const meta = el('div', { class: 'subtext' }, `${node.children.length} sub, ${node.questions.length} q, ${node.tasks.length} tasks`);
   footer.append(meta, el('div'));
   container.append(footer);
+  container.classList.toggle('disabled', node.enabled === false);
 
   // Inline Questions (Prepare)
   const qSection = el('div', { class: 'story-section' });
@@ -491,6 +512,10 @@ function renderNode(node) {
     availBtn.addEventListener('click', () => { avail.hidden = !avail.hidden; });
     actions.append(pri, availBtn, edit, del);
     top.append(label, actions);
+    // status tint
+    if (t.completed) row.classList.add('status-completed');
+    else if (isTaskAvailable(t)) row.classList.add('status-available');
+    else row.classList.add('status-blocked');
     row.append(top);
     // Availability controls (Prepare, hidden by default)
     row.append(avail);
@@ -813,6 +838,10 @@ function renderStoryCard() {
     if (reason) item.append(el('span', { class: 'pill' }, reason));
     // Availability controls (Review, hidden by default)
     item.append(avail);
+    // Status tint classes
+    if (t.completed) item.classList.add('status-completed');
+    else if (isTaskAvailable(t)) item.classList.add('status-available');
+    else item.classList.add('status-blocked');
     tasksEl.append(item);
   }
   // Quick add task in review
@@ -977,6 +1006,7 @@ function flattenTaskRefs() {
   const roots = store.data.threads || [];
   const walk = (list) => {
     for (const n of list) {
+      if (!isNodePathEnabled(n)) { if (n.children?.length) walk(n.children); continue; }
       for (let i = 0; i < (n.tasks || []).length; i++) {
         const t = n.tasks[i];
         out.push({ node: n, index: i, task: t, root: rootOf(n) });
@@ -1048,11 +1078,15 @@ function renderPantryCategory(cat) {
   rename.addEventListener('click', () => { const n = confirmName('Rename category', cat.name); if (!n) return; cat.name = n; store.saveNow(); renderPantryPrepare(); });
   const addSub = el('button', { class: 'btn ghost' }, '+ Subcategory');
   addSub.addEventListener('click', () => { const n = confirmName('New subcategory', ''); if (!n) return; cat.children.push(createCategory(n)); store.saveNow(); renderPantryPrepare(); });
-  actions.append(rename, addSub);
+  const enabledToggle = el('label', { class: 'subtext' });
+  const en = el('input', { type: 'checkbox' }); en.checked = cat.enabled !== false; en.addEventListener('change', ()=>{ cat.enabled = en.checked; store.saveNow(); renderPantryPrepare(); });
+  enabledToggle.append(en, document.createTextNode(' Enabled'));
+  actions.append(rename, addSub, enabledToggle);
   header.append(title, actions);
   container.append(header);
   const meta = el('div', { class: 'subtext' }, `${(cat.children||[]).length} sub, ${(cat.items||[]).length} items`);
   container.append(meta);
+  container.classList.toggle('disabled', cat.enabled === false);
 
   const list = el('div', { class: 'inline-list' });
   (cat.items||[]).forEach(item => {
@@ -1070,6 +1104,8 @@ function renderPantryCategory(cat) {
     del.addEventListener('click', ()=>{ cat.items = cat.items.filter(x=>x.id!==item.id); store.saveNow(); renderPantryPrepare(); });
     actions.append(status, edit, del);
     top.append(label, actions);
+    // status tint
+    row.classList.add(`pantry-${item.status}`);
     row.append(top);
     list.append(row);
   });
@@ -1090,11 +1126,11 @@ function renderPantryCategory(cat) {
 
 // Pantry review
 let pantryReviewState = { ids: [], idx: 0 };
-function pantryFlattenCats(){ const out=[]; const walk=list=>{ (list||[]).forEach(c=>{ out.push(c); if(c.children?.length) walk(c.children); }); }; walk(store.data.pantry?.categories||[]); return out; }
+function pantryFlattenCats(){ const out=[]; const walk=(list, enabledPath=true)=>{ (list||[]).forEach(c=>{ const en = enabledPath && c.enabled !== false; if (en) out.push(c); if(c.children?.length) walk(c.children, en); }); }; walk(store.data.pantry?.categories||[]); return out; }
 function startPantryReview(){ const list=pantryFlattenCats(); pantryReviewState={ids:list.map(c=>c.id), idx:0}; if(!list.length){ $('#pantry-review-empty').hidden=false; $('#pantry-review-stage').hidden=true; return;} $('#pantry-review-empty').hidden=true; $('#pantry-review-stage').hidden=false; renderPantryProgress(); renderPantryCard(); savePantryReviewProgress(); }
 function findCategoryById(id){ const stack=[...(store.data.pantry?.categories||[])]; while(stack.length){ const c=stack.pop(); if(c.id===id) return c; (c.children||[]).forEach(x=>stack.push(x)); } return null; }
 function renderPantryProgress(){ const bar=$('#pprogress'); bar.innerHTML=''; const total=pantryReviewState.ids.length||1; for(let i=0;i<total;i++){ const seg=el('div',{class:'segment'}); const fill=el('div',{class:'fill'}); if(i<pantryReviewState.idx) seg.classList.add('done'); if(i===pantryReviewState.idx) seg.classList.add('current'); seg.append(fill); bar.append(seg);} const cur=bar.querySelector('.segment.current .fill'); if(cur) cur.style.setProperty('--w','100%'); }
-function renderPantryCard(){ const c=findCategoryById(pantryReviewState.ids[pantryReviewState.idx]); const card=$('#pcard'); card.innerHTML=''; if(!c){ card.append(el('div',{class:'empty'},'Review complete.')); return;} const header=el('div',{class:'story-header'}); header.append(el('div',{class:'story-title'},c.name)); card.append(header); (c.items||[]).forEach(item=>{ const row=el('div',{class:'task'}); const status=el('select',{class:'priority-select'}); [['to_buy','To buy'],['stocked','Stocked'],['not_needed','Not needed']].forEach(([v,t])=>status.append(el('option',{value:v},t))); status.value=item.status; status.addEventListener('change',()=>{ item.status=status.value; store.saveNow(); renderPantryCard(); }); const title=el('div',{},item.name); const meta=el('div',{class:'meta'}); meta.append(status); row.append(el('div'), title, meta); card.append(row); }); }
+function renderPantryCard(){ const c=findCategoryById(pantryReviewState.ids[pantryReviewState.idx]); const card=$('#pcard'); card.innerHTML=''; if(!c){ card.append(el('div',{class:'empty'},'Review complete.')); return;} const header=el('div',{class:'story-header'}); header.append(el('div',{class:'story-title'},c.name)); card.append(header); (c.items||[]).forEach(item=>{ const row=el('div',{class:'task'}); row.classList.add(`pantry-${item.status}`); const status=el('select',{class:'priority-select'}); [['to_buy','To buy'],['stocked','Stocked'],['not_needed','Not needed']].forEach(([v,t])=>status.append(el('option',{value:v},t))); status.value=item.status; status.addEventListener('change',()=>{ item.status=status.value; store.saveNow(); renderPantryCard(); }); const title=el('div',{},item.name); const meta=el('div',{class:'meta'}); meta.append(status); row.append(el('div'), title, meta); card.append(row); }); }
 function pantryNext(){ if(pantryReviewState.idx<pantryReviewState.ids.length-1){ pantryReviewState.idx++; renderPantryProgress(); renderPantryCard(); savePantryReviewProgress(); } else { $('#pantry-review-stage').hidden=true; const e=$('#pantry-review-empty'); e.textContent='Review complete.'; e.hidden=false; clearPantryReviewProgress(); } }
 function pantryPrev(){ if(pantryReviewState.idx>0){ pantryReviewState.idx--; renderPantryProgress(); renderPantryCard(); savePantryReviewProgress(); } }
 function pantryOnReviewVisibility(){ const list=pantryFlattenCats(); const has=list.length>0; const e=$('#pantry-review-empty'); e.textContent = has ? 'Press Start Review to begin.' : 'No categories/items yet. Add some in Prepare.'; e.hidden=false; $('#pantry-review-stage').hidden=true; }
@@ -1109,7 +1145,7 @@ function restorePantryReviewProgressIfAny(){ try { const raw=localStorage.getIte
 function shoppingItems(){ const out=[]; const cats=pantryFlattenCats(); cats.forEach(c=> (c.items||[]).forEach(it=> out.push({cat:c,item:it})) ); return out; }
 function needsBuying(item){ return item.status === 'to_buy'; }
 function nodePathLike(n){ const names=[]; let cur=n; const all=pantryFlattenCats(); const parent=new Map(); all.forEach(c=> (c.children||[]).forEach(ch=> parent.set(ch.id,c.id))); while(cur){ names.unshift(cur.name); const pid=parent.get(cur.id); cur = pid ? all.find(c=>c.id===pid) : null; } return names.join(' › '); }
-function renderShoppingList(){ const root=$('#shopping-root'); if(!root) return; root.innerHTML=''; const arr=shoppingItems().filter(x=>needsBuying(x.item)); if(!arr.length){ root.append(el('div',{class:'empty'},'Nothing to buy.')); return;} const byCat=new Map(); arr.forEach(({cat,item})=>{ const k=nodePathLike(cat); if(!byCat.has(k)) byCat.set(k,[]); byCat.get(k).push({cat,item}); }); for(const [path,list] of byCat.entries()){ root.append(el('div',{class:'subtext'},path)); list.forEach(({cat,item})=>{ const row=el('div',{class:'task'}); const cb=el('input',{type:'checkbox'}); cb.checked=false; cb.addEventListener('change',()=>{ if(cb.checked){ item.status='stocked'; store.saveNow(); renderShoppingList(); }}); const main=el('div',{},item.name); const meta=el('div',{class:'meta'}); const del=el('button',{class:'btn ghost'},'Remove'); del.addEventListener('click',()=>{ cat.items=cat.items.filter(x=>x.id!==item.id); store.saveNow(); renderShoppingList(); renderPantryPrepare(); }); meta.append(del); row.append(cb, main, meta); root.append(row); }); }
+function renderShoppingList(){ const root=$('#shopping-root'); if(!root) return; root.innerHTML=''; const arr=shoppingItems().filter(x=>needsBuying(x.item)); if(!arr.length){ root.append(el('div',{class:'empty'},'Nothing to buy.')); return;} const byCat=new Map(); arr.forEach(({cat,item})=>{ const k=nodePathLike(cat); if(!byCat.has(k)) byCat.set(k,[]); byCat.get(k).push({cat,item}); }); for(const [path,list] of byCat.entries()){ root.append(el('div',{class:'subtext'},path)); list.forEach(({cat,item})=>{ const row=el('div',{class:'task'}); row.classList.add('pantry-to_buy'); const cb=el('input',{type:'checkbox'}); cb.checked=false; cb.addEventListener('change',()=>{ if(cb.checked){ item.status='stocked'; store.saveNow(); renderShoppingList(); }}); const main=el('div',{},item.name); const meta=el('div',{class:'meta'}); const del=el('button',{class:'btn ghost'},'Remove'); del.addEventListener('click',()=>{ cat.items=cat.items.filter(x=>x.id!==item.id); store.saveNow(); renderShoppingList(); renderPantryPrepare(); }); meta.append(del); row.append(cb, main, meta); root.append(row); }); }
 }
 let tasksViewState = { currentContext: 'Any', showBlocked: false };
 
@@ -1194,6 +1230,10 @@ function renderTasksPane() {
     availBtn.addEventListener('click', () => { avail.hidden = !avail.hidden; });
     actions.append(pri, availBtn, edit, del);
     item.append(cb, main, actions);
+    // Status tint classes
+    if (t.completed) item.classList.add('status-completed');
+    else if (isTaskAvailable(t, now, ctx)) item.classList.add('status-available');
+    else item.classList.add('status-blocked');
     // Availability controls in Tasks pane (hidden by default)
     item.append(avail);
     root.append(item);
