@@ -100,7 +100,7 @@ function createQuestion(text = '') {
 }
 
 function createTask(text = '') {
-  return { id: uid('t'), text, completed: false, priority: 3, availableAt: null, contexts: [], waitingOn: '', followUpAt: null };
+  return { id: uid('t'), text, completed: false, priority: 3, availableAt: null, contexts: [], waitingOn: '', followUpAt: null, loc: '' };
 }
 
 // Pantry creators
@@ -274,6 +274,7 @@ function normalizeNode(n) {
     if (!('contexts' in t)) t.contexts = [];
     if (!('waitingOn' in t)) t.waitingOn = '';
     if (!('followUpAt' in t)) t.followUpAt = null;
+    if (!('loc' in t)) t.loc = '';
   });
   n.children.forEach(normalizeNode);
 }
@@ -425,6 +426,28 @@ function buildAvailabilityControls(nodeId, taskId, rerender) {
   });
   row2.append(chipWrap, addCtx);
   avail.append(row2);
+
+  // Location
+  const rowLoc = el('div', { class: 'row' });
+  rowLoc.append(el('div', { class: 'subtext' }, 'Location'));
+  const locInput = el('input', { type: 'text', placeholder: 'e.g., mobile, laptop, home…' });
+  locInput.value = t.loc || '';
+  locInput.addEventListener('change', () => {
+    const live = findNodeById(store.data.threads, nodeId);
+    const ti = live.tasks.findIndex(x => x.id === taskId);
+    if (ti >= 0) { live.tasks[ti].loc = locInput.value.trim(); }
+    store.saveNow(); rerender && rerender();
+  });
+  const clearLoc = el('button', { class: 'btn ghost' }, 'Clear');
+  clearLoc.addEventListener('click', () => {
+    locInput.value = '';
+    const live = findNodeById(store.data.threads, nodeId);
+    const ti = live.tasks.findIndex(x => x.id === taskId);
+    if (ti >= 0) { live.tasks[ti].loc = ''; }
+    store.saveNow(); rerender && rerender();
+  });
+  rowLoc.append(locInput, clearLoc);
+  avail.append(rowLoc);
 
   // Waiting on
   const row3 = el('div', { class: 'row' });
@@ -1255,12 +1278,19 @@ function wireCopyShopping(){
     }
   };
 }
-let tasksViewState = { currentContext: 'Any', showBlocked: false };
+let tasksViewState = { currentContext: 'Any', currentLocation: 'Any', showBlocked: false };
 
 function allContexts() {
   const set = new Set();
   const refs = flattenTaskRefs();
   refs.forEach(r => (r.task.contexts || []).forEach(c => set.add(c)));
+  return Array.from(set).sort();
+}
+
+function allLocations() {
+  const set = new Set();
+  const refs = flattenTaskRefs();
+  refs.forEach(r => { const v = (r.task.loc || '').trim(); if (v) set.add(v); });
   return Array.from(set).sort();
 }
 
@@ -1279,18 +1309,32 @@ function renderTasksPane() {
     for (const c of allContexts()) sel.append(el('option', { value: c }, c));
     sel.value = tasksViewState.currentContext || 'Any';
     sel.addEventListener('change', () => { tasksViewState.currentContext = sel.value; renderTasksPane(); });
+    controls.append(sel);
+    controls.append(el('label', {}, ' Location: '));
+    const locSel = el('select');
+    locSel.append(el('option', { value: 'Any' }, 'Any'));
+    for (const l of allLocations()) locSel.append(el('option', { value: l }, l));
+    locSel.value = tasksViewState.currentLocation || 'Any';
+    locSel.addEventListener('change', () => { tasksViewState.currentLocation = locSel.value; renderTasksPane(); });
+    controls.append(locSel);
     const showLbl = el('label', {});
     const showCb = el('input', { type: 'checkbox' });
     showCb.checked = !!tasksViewState.showBlocked;
     showCb.addEventListener('change', () => { tasksViewState.showBlocked = showCb.checked; renderTasksPane(); });
     showLbl.append(showCb, document.createTextNode(' Show blocked'));
-    controls.append(sel, showLbl);
+    controls.append(showLbl);
   }
 
   const ctx = tasksViewState.currentContext === 'Any' ? null : tasksViewState.currentContext;
+  const loc = tasksViewState.currentLocation === 'Any' ? null : tasksViewState.currentLocation;
   const now = new Date();
   let refs = flattenTaskRefs();
-  const filtered = refs.filter(ref => passesContext(ref.task, ctx) && (tasksViewState.showBlocked ? true : isTaskAvailable(ref.task, now, ctx)));
+  const filtered = refs.filter(ref => {
+    const okCtx = passesContext(ref.task, ctx);
+    const okLoc = !loc || ((ref.task.loc || '') === loc);
+    const okAvail = tasksViewState.showBlocked ? true : isTaskAvailable(ref.task, now, ctx);
+    return okCtx && okLoc && okAvail;
+  });
   refs = filtered
     .sort((a, b) => {
       const aa = isTaskAvailable(a.task, now, ctx) ? 0 : 1;
@@ -1315,7 +1359,8 @@ function renderTasksPane() {
     const main = el('div');
     main.append(el('div', {}, t.text));
     const reason = availabilityReason(t, now, ctx);
-    const ctxLine = nodePath(n) + (reason ? ` • ${reason}` : '');
+    const locTag = (t.loc && t.loc.trim()) ? ` • Loc: ${t.loc.trim()}` : '';
+    const ctxLine = nodePath(n) + (reason ? ` • ${reason}` : '') + locTag;
     main.append(el('div', { class: 'ctx' }, ctxLine));
     const actions = el('div', { class: 'meta' });
     const pri = el('select', { class: 'priority-select', title: 'Priority' });
