@@ -18,22 +18,36 @@ const firebaseConfig = {
 const app = initializeApp(firebaseConfig);
 const db = getFirestore(app);
 
-async function canUseIndexedDb() {
+async function canUseIndexedDb(timeoutMs = 300) {
   if (!('indexedDB' in window)) return false;
   try {
-    await new Promise((resolve, reject) => {
-      const req = indexedDB.open('daymx-idb-test');
-      req.onerror = () => reject(req.error || new Error('IndexedDB open failed'));
+    const ok = await new Promise((resolve) => {
+      let done = false;
+      const finish = (val) => {
+        if (done) return;
+        done = true;
+        clearTimeout(timer);
+        resolve(val);
+      };
+      const timer = setTimeout(() => finish(false), timeoutMs);
+      let req;
+      try {
+        req = indexedDB.open('daymx-idb-test');
+      } catch {
+        finish(false);
+        return;
+      }
+      req.onerror = () => finish(false);
       req.onupgradeneeded = () => {
         try { req.result.createObjectStore('t'); } catch {}
       };
       req.onsuccess = () => {
         try { req.result.close(); } catch {}
         try { indexedDB.deleteDatabase('daymx-idb-test'); } catch {}
-        resolve(true);
+        finish(true);
       };
     });
-    return true;
+    return ok;
   } catch {
     return false;
   }
