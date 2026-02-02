@@ -18,18 +18,45 @@ const firebaseConfig = {
 const app = initializeApp(firebaseConfig);
 const db = getFirestore(app);
 
-// Best-effort offline support with multi-tab sync (avoids failed-precondition errors).
-enableMultiTabIndexedDbPersistence(db)
-  .catch(() => enableIndexedDbPersistence(db))
-  .catch(() => {/* ignore persistence issues */});
+async function canUseIndexedDb() {
+  if (!('indexedDB' in window)) return false;
+  try {
+    await new Promise((resolve, reject) => {
+      const req = indexedDB.open('daymx-idb-test');
+      req.onerror = () => reject(req.error || new Error('IndexedDB open failed'));
+      req.onupgradeneeded = () => {
+        try { req.result.createObjectStore('t'); } catch {}
+      };
+      req.onsuccess = () => {
+        try { req.result.close(); } catch {}
+        try { indexedDB.deleteDatabase('daymx-idb-test'); } catch {}
+        resolve(true);
+      };
+    });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+// Best-effort offline support with multi-tab sync (avoid noisy errors if IndexedDB is blocked).
+const ready = (async () => {
+  if (await canUseIndexedDb()) {
+    try {
+      await enableMultiTabIndexedDbPersistence(db);
+    } catch {
+      try { await enableIndexedDbPersistence(db); } catch {}
+    }
+  }
+  return true;
+})();
 
 // Single shared document path (public). Rules must permit read/write.
 function ensureDocRef() {
   return doc(db, 'daymx', 'public');
 }
 
-// Ready is immediate in public mode
-const ready = Promise.resolve(true);
+// Ready resolves after (optional) persistence setup
 
 async function getData() {
   await ready;
