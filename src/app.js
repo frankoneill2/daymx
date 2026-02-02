@@ -16,7 +16,7 @@ const defaultData = () => ({
   pantry: { categories: [] },
 });
 
-const LOCATION_PRESETS = ['mobile', 'home', 'work'];
+const LOCATION_PRESETS = ['mobile', 'laptop', 'home', 'work'];
 const DURATION_PRESETS = [5, 15, 30, 60];
 
 function normalizeTagValue(value) {
