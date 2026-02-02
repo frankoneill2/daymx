@@ -25,7 +25,7 @@ Key Concepts
 - Thread: Top-level category (e.g., Fitness, Reading).
 - Subthread: Nested under any thread; each subthread can have Questions and Tasks.
 - Question: Reflection or planning prompt. Editable in Prepare and addable during Review.
-- Task: Action item tied to a subthread. Add in Prepare, mark complete and add during Review.
+- Task: Action item tied to a subthread. Add in Prepare, mark complete and add during Review. Tasks can be tagged with locations and time estimates for filtering.
 
 Prepare Phase
 

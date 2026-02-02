@@ -16,6 +16,68 @@ const defaultData = () => ({
   pantry: { categories: [] },
 });
 
+const LOCATION_PRESETS = ['mobile', 'home', 'work'];
+const DURATION_PRESETS = [5, 15, 30, 60];
+
+function normalizeTagValue(value) {
+  return String(value || '').trim();
+}
+
+function uniqTags(list) {
+  const out = [];
+  const seen = new Set();
+  (list || []).forEach((raw) => {
+    const v = normalizeTagValue(raw);
+    if (!v) return;
+    const key = v.toLowerCase();
+    if (seen.has(key)) return;
+    seen.add(key);
+    out.push(v);
+  });
+  return out;
+}
+
+function normalizeDurationValue(value) {
+  if (value == null || value === '') return null;
+  if (typeof value === 'number' && isFinite(value) && value > 0) return Math.round(value);
+  const raw = String(value).trim().toLowerCase();
+  if (!raw) return null;
+  const m = raw.match(/^(\d+)\s*m/);
+  if (m) return Number(m[1]);
+  const h = raw.match(/^(\d+)\s*h/);
+  if (h) return Number(h[1]) * 60;
+  const n = Number(raw);
+  if (Number.isFinite(n) && n > 0) return Math.round(n);
+  return null;
+}
+
+function formatDuration(mins) {
+  const v = normalizeDurationValue(mins);
+  if (!v) return '';
+  if (v < 60) return `${v}m`;
+  if (v % 60 === 0) return `${v / 60}h`;
+  const h = Math.floor(v / 60);
+  const m = v % 60;
+  return `${h}h ${m}m`;
+}
+
+function taskLocations(t) {
+  const base = Array.isArray(t?.locations) ? t.locations : [];
+  const legacy = normalizeTagValue(t?.loc || '');
+  const merged = legacy ? base.concat([legacy]) : base;
+  return uniqTags(merged);
+}
+
+function setTaskLocations(t, locations) {
+  const list = uniqTags(locations);
+  t.locations = list;
+  t.loc = list[0] || '';
+}
+
+function taskDurationMins(t) {
+  return normalizeDurationValue(t?.duration);
+}
+
 const store = {
   data: null,
   mode: 'local', // 'local' | 'firebase'
@@ -100,7 +162,7 @@ function createQuestion(text = '') {
 }
 
 function createTask(text = '') {
-  return { id: uid('t'), text, completed: false, priority: 3, availableAt: null, contexts: [], waitingOn: '', followUpAt: null, loc: '' };
+  return { id: uid('t'), text, completed: false, priority: 3, availableAt: null, contexts: [], waitingOn: '', followUpAt: null, loc: '', locations: [], duration: null };
 }
 
 // Pantry creators
@@ -275,6 +337,14 @@ function normalizeNode(n) {
     if (!('waitingOn' in t)) t.waitingOn = '';
     if (!('followUpAt' in t)) t.followUpAt = null;
     if (!('loc' in t)) t.loc = '';
+    if (!('locations' in t)) t.locations = [];
+    if (!Array.isArray(t.locations)) t.locations = [];
+    if (!('duration' in t)) t.duration = null;
+    t.duration = normalizeDurationValue(t.duration);
+    const legacyLoc = normalizeTagValue(t.loc || '');
+    if (legacyLoc && (!t.locations || !t.locations.length)) t.locations = [legacyLoc];
+    t.locations = uniqTags(t.locations);
+    if (!t.loc && t.locations.length) t.loc = t.locations[0];
   });
   n.children.forEach(normalizeNode);
 }
@@ -375,88 +445,161 @@ function confirmName(promptText, initial = '') {
   return name.trim();
 }
 
+function buildTaskTagline(t, reason = '') {
+  const locs = taskLocations(t);
+  const dur = taskDurationMins(t);
+  if (!locs.length && !dur && !reason) return null;
+  const line = el('div', { class: 'tagline' });
+  if (locs.length) line.append(el('span', { class: 'pill tag' }, `Loc: ${locs.join(', ')}`));
+  if (dur) line.append(el('span', { class: 'pill tag' }, `Time: ${formatDuration(dur)}`));
+  if (reason) line.append(el('span', { class: 'pill warn' }, reason));
+  return line;
+}
+
 function buildAvailabilityControls(nodeId, taskId, rerender) {
   const n = findNodeById(store.data.threads, nodeId);
   const t = (n?.tasks || []).find(x => x.id === taskId);
   const avail = el('div', { class: 'availability' });
   if (!n || !t) return avail;
+  function updateTask(updater) {
+    const live = findNodeById(store.data.threads, nodeId);
+    const ti = live?.tasks?.findIndex(x => x.id === taskId) ?? -1;
+    if (ti < 0) return;
+    updater(live.tasks[ti]);
+    store.saveNow(); rerender && rerender();
+  }
   // Available From
   const row1 = el('div', { class: 'row' });
   row1.append(el('div', { class: 'subtext' }, 'Available from'));
   const dt = el('input', { type: 'datetime-local' });
   dt.value = toLocalInputValue(t.availableAt);
   dt.addEventListener('change', () => {
-    const live = findNodeById(store.data.threads, nodeId);
-    const ti = live.tasks.findIndex(x => x.id === taskId);
-    if (ti >= 0) live.tasks[ti].availableAt = parseLocalDateTime(dt.value);
-    store.saveNow(); rerender && rerender();
+    updateTask(task => { task.availableAt = parseLocalDateTime(dt.value); });
   });
   const clear1 = el('button', { class: 'btn ghost' }, 'Clear');
-  clear1.addEventListener('click', () => { dt.value = ''; const live = findNodeById(store.data.threads, nodeId); const ti = live.tasks.findIndex(x => x.id === taskId); if (ti >= 0) live.tasks[ti].availableAt = null; store.saveNow(); rerender && rerender(); });
+  clear1.addEventListener('click', () => { dt.value = ''; updateTask(task => { task.availableAt = null; }); });
   row1.append(dt, clear1);
   avail.append(row1);
 
   // Contexts
   const row2 = el('div', { class: 'row' });
   row2.append(el('div', { class: 'subtext' }, 'Contexts'));
+  const ctxStack = el('div', { class: 'stack' });
   const chipWrap = el('div', { class: 'chiplist' });
   (t.contexts || []).forEach((c) => {
     const ch = el('span', { class: 'chip' }, [c, el('button', {}, '✕')]);
     ch.querySelector('button').addEventListener('click', () => {
-      const live = findNodeById(store.data.threads, nodeId);
-      const ti = live.tasks.findIndex(x => x.id === taskId);
-      if (ti >= 0) {
-        live.tasks[ti].contexts = (live.tasks[ti].contexts || []).filter(x => x !== c);
-        store.saveNow(); rerender && rerender();
-      }
+      updateTask(task => { task.contexts = (task.contexts || []).filter(x => x !== c); });
     });
     chipWrap.append(ch);
   });
+  const ctxAddRow = el('div', { class: 'mini-add' });
   const ctxInput = el('input', { type: 'text', placeholder: 'Add context…' });
   const addCtx = el('button', { class: 'btn ghost' }, 'Add');
   addCtx.addEventListener('click', () => {
     const v = ctxInput.value.trim(); if (!v) return;
-    const live = findNodeById(store.data.threads, nodeId);
-    const ti = live.tasks.findIndex(x => x.id === taskId);
-    if (ti >= 0) {
-      const arr = live.tasks[ti].contexts || [];
+    updateTask(task => {
+      const arr = task.contexts || [];
       if (!arr.includes(v)) arr.push(v);
-      store.saveNow(); rerender && rerender(); ctxInput.value = '';
-    }
+      task.contexts = arr;
+    });
+    ctxInput.value = '';
   });
-  row2.append(chipWrap, addCtx);
+  ctxInput.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') { e.preventDefault(); addCtx.click(); }
+  });
+  ctxAddRow.append(ctxInput, addCtx);
+  ctxStack.append(chipWrap, ctxAddRow);
+  row2.append(ctxStack, el('div'));
   avail.append(row2);
 
-  // Location
+  // Locations (tags)
   const rowLoc = el('div', { class: 'row' });
-  rowLoc.append(el('div', { class: 'subtext' }, 'Location'));
-  const locInput = el('input', { type: 'text', placeholder: 'e.g., mobile, laptop, home…' });
-  locInput.value = t.loc || '';
-  locInput.addEventListener('change', () => {
-    const live = findNodeById(store.data.threads, nodeId);
-    const ti = live.tasks.findIndex(x => x.id === taskId);
-    if (ti >= 0) { live.tasks[ti].loc = locInput.value.trim(); }
-    store.saveNow(); rerender && rerender();
+  rowLoc.append(el('div', { class: 'subtext' }, 'Locations'));
+  const locStack = el('div', { class: 'stack' });
+  const locChips = el('div', { class: 'chiplist' });
+  const locOptions = uniqTags([].concat(LOCATION_PRESETS, taskLocations(t)));
+  locOptions.forEach((loc) => {
+    const active = taskLocations(t).some(x => x.toLowerCase() === loc.toLowerCase());
+    const btn = el('button', { class: `chip toggle${active ? ' active' : ''}` }, loc);
+    btn.addEventListener('click', () => {
+      updateTask(task => {
+        const list = taskLocations(task);
+        const idx = list.findIndex(x => x.toLowerCase() === loc.toLowerCase());
+        if (idx >= 0) list.splice(idx, 1);
+        else list.push(loc);
+        setTaskLocations(task, list);
+      });
+    });
+    locChips.append(btn);
   });
-  const clearLoc = el('button', { class: 'btn ghost' }, 'Clear');
-  clearLoc.addEventListener('click', () => {
+  const locAddRow = el('div', { class: 'mini-add' });
+  const locInput = el('input', { type: 'text', placeholder: 'Add location…' });
+  const addLoc = el('button', { class: 'btn ghost' }, 'Add');
+  addLoc.addEventListener('click', () => {
+    const v = locInput.value.trim(); if (!v) return;
+    updateTask(task => {
+      const list = taskLocations(task);
+      list.push(v);
+      setTaskLocations(task, list);
+    });
     locInput.value = '';
-    const live = findNodeById(store.data.threads, nodeId);
-    const ti = live.tasks.findIndex(x => x.id === taskId);
-    if (ti >= 0) { live.tasks[ti].loc = ''; }
-    store.saveNow(); rerender && rerender();
   });
-  rowLoc.append(locInput, clearLoc);
+  locInput.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') { e.preventDefault(); addLoc.click(); }
+  });
+  locAddRow.append(locInput, addLoc);
+  locStack.append(locChips, locAddRow);
+  const clearLoc = el('button', { class: 'btn ghost' }, 'Clear');
+  clearLoc.addEventListener('click', () => { updateTask(task => { setTaskLocations(task, []); }); });
+  rowLoc.append(locStack, clearLoc);
   avail.append(rowLoc);
+
+  // Time estimate
+  const rowTime = el('div', { class: 'row' });
+  rowTime.append(el('div', { class: 'subtext' }, 'Time'));
+  const timeStack = el('div', { class: 'stack' });
+  const timeChips = el('div', { class: 'chiplist' });
+  const current = taskDurationMins(t);
+  const timeOptions = Array.from(new Set([].concat(DURATION_PRESETS, current ? [current] : []))).sort((a, b) => a - b);
+  timeOptions.forEach((mins) => {
+    const active = current === mins;
+    const btn = el('button', { class: `chip toggle${active ? ' active' : ''}` }, formatDuration(mins) || `${mins}m`);
+    btn.addEventListener('click', () => {
+      updateTask(task => {
+        const cur = taskDurationMins(task);
+        task.duration = cur === mins ? null : mins;
+      });
+    });
+    timeChips.append(btn);
+  });
+  const timeAddRow = el('div', { class: 'mini-add' });
+  const timeInput = el('input', { type: 'number', min: '1', placeholder: 'Custom mins' });
+  const timeSet = el('button', { class: 'btn ghost' }, 'Set');
+  timeSet.addEventListener('click', () => {
+    const v = normalizeDurationValue(timeInput.value);
+    if (!v) return;
+    updateTask(task => { task.duration = v; });
+    timeInput.value = '';
+  });
+  timeInput.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') { e.preventDefault(); timeSet.click(); }
+  });
+  timeAddRow.append(timeInput, timeSet);
+  timeStack.append(timeChips, timeAddRow);
+  const clearTime = el('button', { class: 'btn ghost' }, 'Clear');
+  clearTime.addEventListener('click', () => { updateTask(task => { task.duration = null; }); });
+  rowTime.append(timeStack, clearTime);
+  avail.append(rowTime);
 
   // Waiting on
   const row3 = el('div', { class: 'row' });
   row3.append(el('div', { class: 'subtext' }, 'Waiting on'));
   const waitInput = el('input', { type: 'text', placeholder: 'Name or reason…' });
   waitInput.value = t.waitingOn || '';
-  waitInput.addEventListener('change', () => { const live = findNodeById(store.data.threads, nodeId); const ti = live.tasks.findIndex(x => x.id === taskId); if (ti >= 0) { live.tasks[ti].waitingOn = waitInput.value.trim(); } store.saveNow(); rerender && rerender(); });
+  waitInput.addEventListener('change', () => { updateTask(task => { task.waitingOn = waitInput.value.trim(); }); });
   const clearWait = el('button', { class: 'btn ghost' }, 'Clear');
-  clearWait.addEventListener('click', () => { const live = findNodeById(store.data.threads, nodeId); const ti = live.tasks.findIndex(x => x.id === taskId); if (ti >= 0) { live.tasks[ti].waitingOn = ''; } store.saveNow(); rerender && rerender(); });
+  clearWait.addEventListener('click', () => { updateTask(task => { task.waitingOn = ''; }); });
   row3.append(waitInput, clearWait);
   avail.append(row3);
 
@@ -594,7 +737,7 @@ function renderNode(node) {
     });
     const avail = buildAvailabilityControls(node.id, t.id, () => renderThreads());
     avail.hidden = true;
-    const availBtn = el('button', { class: 'btn ghost' }, 'Availability');
+    const availBtn = el('button', { class: 'btn ghost' }, 'Tags');
     availBtn.addEventListener('click', () => { avail.hidden = !avail.hidden; });
     actions.append(pri, availBtn, edit, del);
     top.append(label, actions);
@@ -887,7 +1030,8 @@ function renderStoryCard() {
       store.saveNow();
       item.classList.toggle('completed', cb.checked);
     });
-    const text = el('div', {}, t.text);
+    const main = el('div');
+    main.append(el('div', {}, t.text));
     const btns = el('div', { class: 'meta' });
     const pri = el('select', { class: 'priority-select', title: 'Priority' });
     for (let i = 1; i <= 5; i++) pri.append(el('option', { value: String(i) }, i));
@@ -916,13 +1060,13 @@ function renderStoryCard() {
     });
     const avail = buildAvailabilityControls(n.id, t.id, () => renderStoryCard());
     avail.hidden = true;
-    const availBtn = el('button', { class: 'btn ghost' }, 'Availability');
+    const availBtn = el('button', { class: 'btn ghost' }, 'Tags');
     availBtn.addEventListener('click', () => { avail.hidden = !avail.hidden; });
     btns.append(pri, availBtn, editBtn, delBtn);
-    item.append(cb, text, btns);
-    // Reason pill if blocked (no context filtering here)
     const reason = availabilityReason(t);
-    if (reason) item.append(el('span', { class: 'pill' }, reason));
+    const tagline = buildTaskTagline(t, reason);
+    if (tagline) main.append(tagline);
+    item.append(cb, main, btns);
     // Availability controls (Review, hidden by default)
     item.append(avail);
     // Status tint classes
@@ -1278,7 +1422,7 @@ function wireCopyShopping(){
     }
   };
 }
-let tasksViewState = { currentContext: 'Any', currentLocation: 'Any', showBlocked: false };
+let tasksViewState = { currentContext: 'Any', locationTags: [], durationMax: null, showBlocked: false };
 
 function allContexts() {
   const set = new Set();
@@ -1290,8 +1434,19 @@ function allContexts() {
 function allLocations() {
   const set = new Set();
   const refs = flattenTaskRefs();
-  refs.forEach(r => { const v = (r.task.loc || '').trim(); if (v) set.add(v); });
-  return Array.from(set).sort();
+  LOCATION_PRESETS.forEach(l => set.add(l));
+  refs.forEach(r => taskLocations(r.task).forEach(l => set.add(l)));
+  return Array.from(set).sort((a, b) => a.localeCompare(b));
+}
+
+function allDurations() {
+  const set = new Set(DURATION_PRESETS);
+  const refs = flattenTaskRefs();
+  refs.forEach(r => {
+    const v = taskDurationMins(r.task);
+    if (v) set.add(v);
+  });
+  return Array.from(set).sort((a, b) => a - b);
 }
 
 function renderTasksPane() {
@@ -1303,45 +1458,91 @@ function renderTasksPane() {
   const controls = $('#tasks-controls');
   if (controls) {
     controls.innerHTML = '';
-    controls.append(el('label', {}, 'Context: '));
-    const sel = el('select');
-    sel.append(el('option', { value: 'Any' }, 'Any'));
-    for (const c of allContexts()) sel.append(el('option', { value: c }, c));
-    sel.value = tasksViewState.currentContext || 'Any';
-    sel.addEventListener('change', () => { tasksViewState.currentContext = sel.value; renderTasksPane(); });
-    controls.append(sel);
-    controls.append(el('label', {}, ' Location: '));
-    const locSel = el('select');
-    locSel.append(el('option', { value: 'Any' }, 'Any'));
-    for (const l of allLocations()) locSel.append(el('option', { value: l }, l));
-    locSel.value = tasksViewState.currentLocation || 'Any';
-    locSel.addEventListener('change', () => { tasksViewState.currentLocation = locSel.value; renderTasksPane(); });
-    controls.append(locSel);
-    const showLbl = el('label', {});
+    const buildGroup = (labelText, contentEl) => {
+      const group = el('div', { class: 'filter-group' });
+      group.append(el('div', { class: 'filter-label' }, labelText));
+      group.append(contentEl);
+      return group;
+    };
+    const ctxs = allContexts();
+    if (ctxs.length) {
+      const ctxRow = el('div', { class: 'filter-row' });
+      const sel = el('select', { class: 'select-sm' });
+      sel.append(el('option', { value: 'Any' }, 'Any'));
+      for (const c of ctxs) sel.append(el('option', { value: c }, c));
+      sel.value = tasksViewState.currentContext || 'Any';
+      sel.addEventListener('change', () => { tasksViewState.currentContext = sel.value; renderTasksPane(); });
+      ctxRow.append(sel);
+      controls.append(buildGroup('Context', ctxRow));
+    }
+
+    const locRow = el('div', { class: 'filter-row' });
+    const activeLocs = uniqTags(tasksViewState.locationTags || []);
+    const locSet = new Set(activeLocs.map(l => l.toLowerCase()));
+    const locAny = el('button', { class: `chip toggle${activeLocs.length ? '' : ' active'}` }, 'Any');
+    locAny.addEventListener('click', () => { tasksViewState.locationTags = []; renderTasksPane(); });
+    locRow.append(locAny);
+    for (const loc of allLocations()) {
+      const active = locSet.has(loc.toLowerCase());
+      const btn = el('button', { class: `chip toggle${active ? ' active' : ''}` }, loc);
+      btn.addEventListener('click', () => {
+        const next = uniqTags(activeLocs);
+        const idx = next.findIndex(x => x.toLowerCase() === loc.toLowerCase());
+        if (idx >= 0) next.splice(idx, 1);
+        else next.push(loc);
+        tasksViewState.locationTags = next;
+        renderTasksPane();
+      });
+      locRow.append(btn);
+    }
+    controls.append(buildGroup('Location', locRow));
+
+    const timeRow = el('div', { class: 'filter-row' });
+    const currentMax = normalizeDurationValue(tasksViewState.durationMax);
+    const timeAny = el('button', { class: `chip toggle${currentMax ? '' : ' active'}` }, 'Any');
+    timeAny.addEventListener('click', () => { tasksViewState.durationMax = null; renderTasksPane(); });
+    timeRow.append(timeAny);
+    for (const mins of allDurations()) {
+      const active = currentMax === mins;
+      const btn = el('button', { class: `chip toggle${active ? ' active' : ''}` }, formatDuration(mins) || `${mins}m`);
+      btn.addEventListener('click', () => {
+        tasksViewState.durationMax = active ? null : mins;
+        renderTasksPane();
+      });
+      timeRow.append(btn);
+    }
+    controls.append(buildGroup('Time ≤', timeRow));
+
+    const optRow = el('div', { class: 'filter-row' });
+    const showLbl = el('label', { class: 'filter-toggle' });
     const showCb = el('input', { type: 'checkbox' });
     showCb.checked = !!tasksViewState.showBlocked;
     showCb.addEventListener('change', () => { tasksViewState.showBlocked = showCb.checked; renderTasksPane(); });
     showLbl.append(showCb, document.createTextNode(' Show blocked'));
-    controls.append(showLbl);
+    optRow.append(showLbl);
+    controls.append(buildGroup('Options', optRow));
   }
 
   const ctx = tasksViewState.currentContext === 'Any' ? null : tasksViewState.currentContext;
-  const loc = tasksViewState.currentLocation === 'Any' ? null : tasksViewState.currentLocation;
+  const locSet = new Set(uniqTags(tasksViewState.locationTags || []).map(l => l.toLowerCase()));
+  const maxDur = normalizeDurationValue(tasksViewState.durationMax);
   const now = new Date();
   let refs = flattenTaskRefs();
   const filtered = refs.filter(ref => {
     const okCtx = passesContext(ref.task, ctx);
-    const okLoc = !loc || ((ref.task.loc || '') === loc);
+    const okLoc = locSet.size === 0 || taskLocations(ref.task).some(l => locSet.has(l.toLowerCase()));
+    const dur = taskDurationMins(ref.task);
+    const okTime = !maxDur || (dur != null && dur <= maxDur);
     const okAvail = tasksViewState.showBlocked ? true : isTaskAvailable(ref.task, now, ctx);
-    return okCtx && okLoc && okAvail;
+    return okCtx && okLoc && okTime && okAvail;
   });
   refs = filtered
     .sort((a, b) => {
+      const pa = a.task.priority || 3; const pb = b.task.priority || 3;
+      if (pa !== pb) return pa - pb; // 1 highest
       const aa = isTaskAvailable(a.task, now, ctx) ? 0 : 1;
       const bb = isTaskAvailable(b.task, now, ctx) ? 0 : 1;
       if (aa !== bb) return aa - bb; // available first
-      const pa = a.task.priority || 3; const pb = b.task.priority || 3;
-      if (pa !== pb) return pa - pb; // 1 highest
       const da = a.task.availableAt ? new Date(a.task.availableAt).getTime() : Infinity;
       const db = b.task.availableAt ? new Date(b.task.availableAt).getTime() : Infinity;
       return da - db;
@@ -1359,9 +1560,10 @@ function renderTasksPane() {
     const main = el('div');
     main.append(el('div', {}, t.text));
     const reason = availabilityReason(t, now, ctx);
-    const locTag = (t.loc && t.loc.trim()) ? ` • Loc: ${t.loc.trim()}` : '';
-    const ctxLine = nodePath(n) + (reason ? ` • ${reason}` : '') + locTag;
+    const ctxLine = nodePath(n) + (reason ? ` • ${reason}` : '');
     main.append(el('div', { class: 'ctx' }, ctxLine));
+    const tagline = buildTaskTagline(t);
+    if (tagline) main.append(tagline);
     const actions = el('div', { class: 'meta' });
     const pri = el('select', { class: 'priority-select', title: 'Priority' });
     for (let i = 1; i <= 5; i++) pri.append(el('option', { value: String(i) }, i));
@@ -1379,7 +1581,7 @@ function renderTasksPane() {
     });
     const avail = buildAvailabilityControls(n.id, t.id, () => renderTasksPane());
     avail.hidden = true;
-    const availBtn = el('button', { class: 'btn ghost' }, 'Availability');
+    const availBtn = el('button', { class: 'btn ghost' }, 'Tags');
     availBtn.addEventListener('click', () => { avail.hidden = !avail.hidden; });
     actions.append(pri, availBtn, edit, del);
     item.append(cb, main, actions);
