@@ -3,7 +3,7 @@
 // Exposes window.daymxFirebase helpers.
 
 import { initializeApp } from 'https://www.gstatic.com/firebasejs/10.13.1/firebase-app.js';
-import { getFirestore, enableIndexedDbPersistence, doc, getDoc, setDoc, onSnapshot } from 'https://www.gstatic.com/firebasejs/10.13.1/firebase-firestore.js';
+import { getFirestore, enableIndexedDbPersistence, enableMultiTabIndexedDbPersistence, doc, getDoc, setDoc, onSnapshot } from 'https://www.gstatic.com/firebasejs/10.13.1/firebase-firestore.js';
 
 const firebaseConfig = {
   apiKey: "AIzaSyAtAvBaBChONefrQtHGYgi9aC2s3Ztn_JI",
@@ -18,8 +18,10 @@ const firebaseConfig = {
 const app = initializeApp(firebaseConfig);
 const db = getFirestore(app);
 
-// Best-effort offline support
-enableIndexedDbPersistence(db).catch(() => {/* ignore multi-tab conflicts */});
+// Best-effort offline support with multi-tab sync (avoids failed-precondition errors).
+enableMultiTabIndexedDbPersistence(db)
+  .catch(() => enableIndexedDbPersistence(db))
+  .catch(() => {/* ignore persistence issues */});
 
 // Single shared document path (public). Rules must permit read/write.
 function ensureDocRef() {
