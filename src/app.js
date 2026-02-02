@@ -17,7 +17,7 @@ const defaultData = () => ({
 });
 
 const LOCATION_PRESETS = ['mobile', 'laptop', 'home', 'work'];
-const DURATION_PRESETS = [5, 15, 30, 60];
+const DURATION_PRESETS = [1, 5, 15, 30, 60];
 
 function normalizeTagValue(value) {
   return String(value || '').trim();
