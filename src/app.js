@@ -78,6 +78,30 @@ function taskDurationMins(t) {
   return normalizeDurationValue(t?.duration);
 }
 
+function isSeriesTask(t) {
+  return Array.isArray(t?.series) && t.series.length > 0;
+}
+
+function seriesStats(t) {
+  if (!isSeriesTask(t)) return null;
+  const total = t.series.length;
+  const done = t.series.filter(s => s.completed).length;
+  const remaining = total - done;
+  const maxRank = Math.max(...t.series.map(s => Math.max(1, Number(s.rank) || 1)));
+  const incomplete = t.series.filter(s => !s.completed);
+  const activeRank = incomplete.length ? Math.min(...incomplete.map(s => Math.max(1, Number(s.rank) || 1))) : null;
+  const activeItems = activeRank == null ? [] : incomplete.filter(s => (Number(s.rank) || 1) === activeRank);
+  return { total, done, remaining, maxRank, activeRank, activeItems };
+}
+
+function seriesSummary(t) {
+  const stats = seriesStats(t);
+  if (!stats) return null;
+  if (stats.remaining === 0) return `Series complete (${stats.total})`;
+  const step = stats.activeRank ? `Step ${stats.activeRank}/${stats.maxRank}` : `Step 0/${stats.maxRank}`;
+  return `Series ${stats.done}/${stats.total} • ${step}`;
+}
+
 const store = {
   data: null,
   mode: 'local', // 'local' | 'firebase'
@@ -162,7 +186,11 @@ function createQuestion(text = '') {
 }
 
 function createTask(text = '') {
-  return { id: uid('t'), text, completed: false, priority: 3, availableAt: null, contexts: [], waitingOn: '', followUpAt: null, loc: '', locations: [], duration: null };
+  return { id: uid('t'), text, completed: false, priority: 3, availableAt: null, contexts: [], waitingOn: '', followUpAt: null, loc: '', locations: [], duration: null, series: [] };
+}
+
+function createSubtask(text = '', rank = 1) {
+  return { id: uid('s'), text, rank: Math.max(1, Number(rank) || 1), completed: false };
 }
 
 // Pantry creators
@@ -345,6 +373,14 @@ function normalizeNode(n) {
     if (legacyLoc && (!t.locations || !t.locations.length)) t.locations = [legacyLoc];
     t.locations = uniqTags(t.locations);
     if (!t.loc && t.locations.length) t.loc = t.locations[0];
+    if (!('series' in t)) t.series = [];
+    if (!Array.isArray(t.series)) t.series = [];
+    t.series.forEach(s => {
+      if (!s.id) s.id = uid('s');
+      s.text = s.text || '';
+      s.rank = Math.max(1, Number(s.rank) || 1);
+      if (typeof s.completed !== 'boolean') s.completed = !!s.completed;
+    });
   });
   n.children.forEach(normalizeNode);
 }
@@ -445,13 +481,16 @@ function confirmName(promptText, initial = '') {
   return name.trim();
 }
 
-function buildTaskTagline(t, reason = '') {
+function buildTaskTagline(t, reason = '', opts = {}) {
   const locs = taskLocations(t);
   const dur = taskDurationMins(t);
-  if (!locs.length && !dur && !reason) return null;
+  const includeSeries = opts.includeSeries !== false;
+  const series = includeSeries ? seriesSummary(t) : null;
+  if (!locs.length && !dur && !reason && !series) return null;
   const line = el('div', { class: 'tagline' });
   if (locs.length) line.append(el('span', { class: 'pill tag' }, `Loc: ${locs.join(', ')}`));
   if (dur) line.append(el('span', { class: 'pill tag' }, `Time: ${formatDuration(dur)}`));
+  if (series) line.append(el('span', { class: 'pill tag series-pill' }, series));
   if (reason) line.append(el('span', { class: 'pill warn' }, reason));
   return line;
 }
@@ -591,6 +630,77 @@ function buildAvailabilityControls(nodeId, taskId, rerender) {
   clearTime.addEventListener('click', () => { updateTask(task => { task.duration = null; }); });
   rowTime.append(timeStack, clearTime);
   avail.append(rowTime);
+
+  // Series
+  const rowSeries = el('div', { class: 'row' });
+  rowSeries.append(el('div', { class: 'subtext' }, 'Series'));
+  const seriesStack = el('div', { class: 'stack' });
+  const seriesList = el('div', { class: 'series-list' });
+  const seriesItems = (t.series || []).slice().sort((a, b) => {
+    const ra = Math.max(1, Number(a.rank) || 1);
+    const rb = Math.max(1, Number(b.rank) || 1);
+    if (ra !== rb) return ra - rb;
+    return (a.text || '').localeCompare(b.text || '');
+  });
+  if (!seriesItems.length) {
+    seriesList.append(el('div', { class: 'subtext' }, 'No subtasks yet.'));
+  } else {
+    seriesItems.forEach((s) => {
+      const row = el('div', { class: 'series-item' + (s.completed ? ' completed' : '') });
+      const cb = el('input', { type: 'checkbox' });
+      cb.checked = !!s.completed;
+      cb.addEventListener('change', () => {
+        updateTask(task => {
+          const sub = (task.series || []).find(x => x.id === s.id);
+          if (sub) sub.completed = cb.checked;
+        });
+      });
+      const rankInput = el('input', { type: 'number', min: '1', class: 'series-rank' });
+      rankInput.value = String(Math.max(1, Number(s.rank) || 1));
+      rankInput.addEventListener('change', () => {
+        updateTask(task => {
+          const sub = (task.series || []).find(x => x.id === s.id);
+          if (sub) sub.rank = Math.max(1, Number(rankInput.value) || 1);
+        });
+      });
+      const textInput = el('input', { type: 'text', class: 'series-text' });
+      textInput.value = s.text || '';
+      textInput.addEventListener('change', () => {
+        updateTask(task => {
+          const sub = (task.series || []).find(x => x.id === s.id);
+          if (sub) sub.text = textInput.value.trim() || sub.text;
+        });
+      });
+      const del = el('button', { class: 'btn ghost' }, 'Remove');
+      del.addEventListener('click', () => {
+        updateTask(task => {
+          task.series = (task.series || []).filter(x => x.id !== s.id);
+        });
+      });
+      row.append(cb, rankInput, textInput, del);
+      seriesList.append(row);
+    });
+  }
+  const seriesAdd = el('div', { class: 'series-add' });
+  const addText = el('input', { type: 'text', placeholder: 'Add subtask…' });
+  const nextRank = (t.series || []).length ? Math.max(...(t.series || []).map(s => Math.max(1, Number(s.rank) || 1))) + 1 : 1;
+  const addRank = el('input', { type: 'number', min: '1', class: 'series-rank' });
+  addRank.value = String(nextRank);
+  const addBtn = el('button', { class: 'btn ghost' }, 'Add');
+  const addSeriesItem = () => {
+    const txt = addText.value.trim(); if (!txt) return;
+    const rank = Math.max(1, Number(addRank.value) || 1);
+    updateTask(task => { task.series = (task.series || []).concat([createSubtask(txt, rank)]); });
+    addText.value = '';
+    addRank.value = String(rank);
+  };
+  addBtn.addEventListener('click', addSeriesItem);
+  addText.addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); addSeriesItem(); } });
+  seriesAdd.append(addText, addRank, addBtn);
+  const seriesNote = el('div', { class: 'series-note' }, 'Steps unlock in rank order. All tasks in a rank must be done to reveal the next rank. Tags apply to the whole series.');
+  seriesStack.append(seriesList, seriesAdd, seriesNote);
+  rowSeries.append(seriesStack, el('div'));
+  avail.append(rowSeries);
 
   // Waiting on
   const row3 = el('div', { class: 'row' });
@@ -1020,16 +1130,24 @@ function renderStoryCard() {
   const tasksEl = el('div', { class: 'tasks' });
   if (!n.tasks.length) tasksEl.append(el('div', { class: 'empty' }, 'No tasks yet.'));
   for (const t of n.tasks) {
-    const item = el('div', { class: 'task' + (t.completed ? ' completed' : '') });
+    const stats = seriesStats(t);
+    const isSeries = !!stats;
+    const done = isSeries ? (stats.remaining === 0) : !!t.completed;
+    const item = el('div', { class: 'task' + (done ? ' completed' : '') });
     const cb = el('input', { type: 'checkbox' });
-    cb.checked = !!t.completed;
-    cb.addEventListener('change', () => {
-      const live = findNodeById(store.data.threads, n.id);
-      const ti = live.tasks.findIndex(x => x.id === t.id);
-      if (ti >= 0) { live.tasks[ti].completed = cb.checked; }
-      store.saveNow();
-      item.classList.toggle('completed', cb.checked);
-    });
+    cb.checked = !!done;
+    if (isSeries) {
+      cb.disabled = true;
+      cb.title = done ? 'Series complete' : 'Complete subtasks to finish series';
+    } else {
+      cb.addEventListener('change', () => {
+        const live = findNodeById(store.data.threads, n.id);
+        const ti = live.tasks.findIndex(x => x.id === t.id);
+        if (ti >= 0) { live.tasks[ti].completed = cb.checked; }
+        store.saveNow();
+        item.classList.toggle('completed', cb.checked);
+      });
+    }
     const main = el('div');
     main.append(el('div', {}, t.text));
     const btns = el('div', { class: 'meta' });
@@ -1070,7 +1188,7 @@ function renderStoryCard() {
     // Availability controls (Review, hidden by default)
     item.append(avail);
     // Status tint classes
-    if (t.completed) item.classList.add('status-completed');
+    if (done) item.classList.add('status-completed');
     else if (isTaskAvailable(t)) item.classList.add('status-available');
     else item.classList.add('status-blocked');
     tasksEl.append(item);
@@ -1258,6 +1376,24 @@ function nodePath(n) {
     cur = pid ? nodeById.get(pid) : null;
   }
   return names.join(' › ');
+}
+
+function flattenTaskEntries() {
+  const out = [];
+  const refs = flattenTaskRefs();
+  refs.forEach((ref) => {
+    const t = ref.task;
+    if (isSeriesTask(t)) {
+      const stats = seriesStats(t);
+      const active = stats?.activeItems || [];
+      active.forEach((s) => {
+        out.push({ kind: 'subtask', subtask: s, series: stats, ...ref });
+      });
+    } else {
+      out.push({ kind: 'task', ...ref });
+    }
+  });
+  return out;
 }
 
 // ------------------------------
@@ -1527,16 +1663,17 @@ function renderTasksPane() {
   const locSet = new Set(uniqTags(tasksViewState.locationTags || []).map(l => l.toLowerCase()));
   const maxDur = normalizeDurationValue(tasksViewState.durationMax);
   const now = new Date();
-  let refs = flattenTaskRefs();
-  const filtered = refs.filter(ref => {
-    const okCtx = passesContext(ref.task, ctx);
-    const okLoc = locSet.size === 0 || taskLocations(ref.task).some(l => locSet.has(l.toLowerCase()));
-    const dur = taskDurationMins(ref.task);
+  let entries = flattenTaskEntries();
+  const filtered = entries.filter(ref => {
+    const base = ref.task;
+    const okCtx = passesContext(base, ctx);
+    const okLoc = locSet.size === 0 || taskLocations(base).some(l => locSet.has(l.toLowerCase()));
+    const dur = taskDurationMins(base);
     const okTime = !maxDur || (dur != null && dur <= maxDur);
-    const okAvail = tasksViewState.showBlocked ? true : isTaskAvailable(ref.task, now, ctx);
+    const okAvail = tasksViewState.showBlocked ? true : isTaskAvailable(base, now, ctx);
     return okCtx && okLoc && okTime && okAvail;
   });
-  refs = filtered
+  entries = filtered
     .sort((a, b) => {
       const pa = a.task.priority || 3; const pb = b.task.priority || 3;
       if (pa !== pb) return pa - pb; // 1 highest
@@ -1547,22 +1684,41 @@ function renderTasksPane() {
       const db = b.task.availableAt ? new Date(b.task.availableAt).getTime() : Infinity;
       return da - db;
     });
-  if (!refs.length) {
+  if (!entries.length) {
     root.append(el('div', { class: 'empty' }, 'No tasks yet.'));
     return;
   }
-  for (const ref of refs) {
+  for (const ref of entries) {
     const { task: t, node: n, root: r } = ref;
-    const item = el('div', { class: 'task' + (t.completed ? ' completed' : ''), style: `border-left:6px solid ${r?.color || 'var(--accent)'}` });
+    const sub = ref.kind === 'subtask' ? ref.subtask : null;
+    const done = sub ? !!sub.completed : !!t.completed;
+    const item = el('div', { class: 'task' + (done ? ' completed' : ''), style: `border-left:6px solid ${r?.color || 'var(--accent)'}` });
     const cb = el('input', { type: 'checkbox' });
-    cb.checked = !!t.completed;
-    cb.addEventListener('change', () => { t.completed = cb.checked; store.saveNow(); item.classList.toggle('completed', t.completed); });
+    cb.checked = !!done;
+    if (sub) {
+      cb.addEventListener('change', () => {
+        sub.completed = cb.checked;
+        store.saveNow();
+        renderTasksPane();
+      });
+    } else {
+      cb.addEventListener('change', () => { t.completed = cb.checked; store.saveNow(); item.classList.toggle('completed', t.completed); });
+    }
     const main = el('div');
-    main.append(el('div', {}, t.text));
+    main.append(el('div', {}, sub ? sub.text : t.text));
     const reason = availabilityReason(t, now, ctx);
     const ctxLine = nodePath(n) + (reason ? ` • ${reason}` : '');
     main.append(el('div', { class: 'ctx' }, ctxLine));
-    const tagline = buildTaskTagline(t);
+    if (sub) {
+      const stats = ref.series || seriesStats(t);
+      const step = Math.max(1, Number(sub.rank) || 1);
+      const max = stats?.maxRank || step;
+      const remaining = stats ? stats.remaining : Math.max(0, (t.series || []).filter(s => !s.completed).length);
+      const others = Math.max(0, remaining - 1);
+      const seriesLine = `Series: ${t.text} • Step ${step}/${max} • ${others} other${others === 1 ? '' : 's'} remaining`;
+      main.append(el('div', { class: 'series-line' }, seriesLine));
+    }
+    const tagline = buildTaskTagline(t, '', { includeSeries: !sub });
     if (tagline) main.append(tagline);
     const actions = el('div', { class: 'meta' });
     const pri = el('select', { class: 'priority-select', title: 'Priority' });
@@ -1571,13 +1727,23 @@ function renderTasksPane() {
     pri.addEventListener('change', () => { t.priority = Number(pri.value); store.saveNow(); renderTasksPane(); });
     const edit = el('button', { class: 'btn ghost' }, 'Edit');
     edit.addEventListener('click', () => {
-      const val = confirmName('Edit task', t.text);
-      if (val != null && val.trim()) { t.text = val.trim(); store.save(); renderTasksPane(); }
+      if (sub) {
+        const val = confirmName('Edit subtask', sub.text);
+        if (val != null && val.trim()) { sub.text = val.trim(); store.save(); renderTasksPane(); }
+      } else {
+        const val = confirmName('Edit task', t.text);
+        if (val != null && val.trim()) { t.text = val.trim(); store.save(); renderTasksPane(); }
+      }
     });
     const del = el('button', { class: 'btn ghost' }, 'Remove');
     del.addEventListener('click', () => {
-      n.tasks = n.tasks.filter(x => x.id !== t.id);
-      store.save(); renderTasksPane(); renderThreads(); renderProgress(); if (!$('#review-stage').hidden) renderStoryCard();
+      if (sub) {
+        t.series = (t.series || []).filter(x => x.id !== sub.id);
+        store.save(); renderTasksPane();
+      } else {
+        n.tasks = n.tasks.filter(x => x.id !== t.id);
+        store.save(); renderTasksPane(); renderThreads(); renderProgress(); if (!$('#review-stage').hidden) renderStoryCard();
+      }
     });
     const avail = buildAvailabilityControls(n.id, t.id, () => renderTasksPane());
     avail.hidden = true;
@@ -1586,7 +1752,7 @@ function renderTasksPane() {
     actions.append(pri, availBtn, edit, del);
     item.append(cb, main, actions);
     // Status tint classes
-    if (t.completed) item.classList.add('status-completed');
+    if (done) item.classList.add('status-completed');
     else if (isTaskAvailable(t, now, ctx)) item.classList.add('status-available');
     else item.classList.add('status-blocked');
     // Availability controls in Tasks pane (hidden by default)
