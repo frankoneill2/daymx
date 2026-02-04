@@ -634,7 +634,28 @@ function buildAvailabilityControls(nodeId, taskId, rerender) {
   // Series
   const rowSeries = el('div', { class: 'row' });
   rowSeries.append(el('div', { class: 'subtext' }, 'Series'));
-  const seriesStack = el('div', { class: 'stack' });
+  const seriesEditor = el('div', { class: 'series-editor' });
+  const stats = seriesStats(t);
+  const total = stats?.total || 0;
+  const done = stats?.done || 0;
+  const maxRank = stats?.maxRank || 0;
+  const activeRank = stats?.activeRank || null;
+
+  const seriesHeader = el('div', { class: 'series-header' });
+  const summary = el('div', { class: 'series-summary' });
+  if (!total) {
+    summary.append(el('span', { class: 'subtext' }, 'No subtasks yet.'));
+  } else {
+    summary.append(el('span', { class: 'series-badge' }, `Series ${done}/${total}`));
+    summary.append(el('span', { class: 'subtext' }, activeRank ? `Step ${activeRank}/${maxRank}` : `Step 0/${maxRank}`));
+  }
+  const progress = el('div', { class: 'series-progress' });
+  const fill = el('div', { class: 'fill' });
+  const pct = total ? Math.round((done / total) * 100) : 0;
+  fill.style.width = `${pct}%`;
+  progress.append(fill);
+  seriesHeader.append(summary, progress);
+
   const seriesList = el('div', { class: 'series-list' });
   const seriesItems = (t.series || []).slice().sort((a, b) => {
     const ra = Math.max(1, Number(a.rank) || 1);
@@ -643,47 +664,68 @@ function buildAvailabilityControls(nodeId, taskId, rerender) {
     return (a.text || '').localeCompare(b.text || '');
   });
   if (!seriesItems.length) {
-    seriesList.append(el('div', { class: 'subtext' }, 'No subtasks yet.'));
+    seriesList.append(el('div', { class: 'series-empty' }, 'Add your first step below.'));
   } else {
+    const groups = new Map();
     seriesItems.forEach((s) => {
-      const row = el('div', { class: 'series-item' + (s.completed ? ' completed' : '') });
-      const cb = el('input', { type: 'checkbox' });
-      cb.checked = !!s.completed;
-      cb.addEventListener('change', () => {
-        updateTask(task => {
-          const sub = (task.series || []).find(x => x.id === s.id);
-          if (sub) sub.completed = cb.checked;
+      const r = Math.max(1, Number(s.rank) || 1);
+      if (!groups.has(r)) groups.set(r, []);
+      groups.get(r).push(s);
+    });
+    const ranks = Array.from(groups.keys()).sort((a, b) => a - b);
+    ranks.forEach((r) => {
+      const items = groups.get(r) || [];
+      const doneCount = items.filter(s => s.completed).length;
+      const allDone = doneCount === items.length;
+      const group = el('div', { class: `series-group${allDone ? ' done' : ''}${activeRank === r ? ' current' : ''}` });
+      const header = el('div', { class: 'series-group-header' });
+      header.append(el('span', { class: 'series-step-pill' }, `Step ${r}`));
+      header.append(el('span', { class: 'series-group-meta' }, `${doneCount}/${items.length} done`));
+      const list = el('div', { class: 'series-group-list' });
+      items.forEach((s) => {
+        const row = el('div', { class: 'series-item' + (s.completed ? ' completed' : '') });
+        const cb = el('input', { type: 'checkbox' });
+        cb.checked = !!s.completed;
+        cb.addEventListener('change', () => {
+          updateTask(task => {
+            const sub = (task.series || []).find(x => x.id === s.id);
+            if (sub) sub.completed = cb.checked;
+          });
         });
-      });
-      const rankInput = el('input', { type: 'number', min: '1', class: 'series-rank' });
-      rankInput.value = String(Math.max(1, Number(s.rank) || 1));
-      rankInput.addEventListener('change', () => {
-        updateTask(task => {
-          const sub = (task.series || []).find(x => x.id === s.id);
-          if (sub) sub.rank = Math.max(1, Number(rankInput.value) || 1);
+        const rankInput = el('input', { type: 'number', min: '1', class: 'series-rank' });
+        rankInput.value = String(Math.max(1, Number(s.rank) || 1));
+        rankInput.addEventListener('change', () => {
+          updateTask(task => {
+            const sub = (task.series || []).find(x => x.id === s.id);
+            if (sub) sub.rank = Math.max(1, Number(rankInput.value) || 1);
+          });
         });
-      });
-      const textInput = el('input', { type: 'text', class: 'series-text' });
-      textInput.value = s.text || '';
-      textInput.addEventListener('change', () => {
-        updateTask(task => {
-          const sub = (task.series || []).find(x => x.id === s.id);
-          if (sub) sub.text = textInput.value.trim() || sub.text;
+        const textInput = el('input', { type: 'text', class: 'series-text' });
+        textInput.value = s.text || '';
+        textInput.addEventListener('change', () => {
+          updateTask(task => {
+            const sub = (task.series || []).find(x => x.id === s.id);
+            if (sub) sub.text = textInput.value.trim() || sub.text;
+          });
         });
-      });
-      const del = el('button', { class: 'btn ghost' }, 'Remove');
-      del.addEventListener('click', () => {
-        updateTask(task => {
-          task.series = (task.series || []).filter(x => x.id !== s.id);
+        const del = el('button', { class: 'btn ghost' }, 'Remove');
+        del.addEventListener('click', () => {
+          updateTask(task => {
+            task.series = (task.series || []).filter(x => x.id !== s.id);
+          });
         });
+        row.append(cb, rankInput, textInput, del);
+        list.append(row);
       });
-      row.append(cb, rankInput, textInput, del);
-      seriesList.append(row);
+      group.append(header, list);
+      seriesList.append(group);
     });
   }
+
   const seriesAdd = el('div', { class: 'series-add' });
   const addText = el('input', { type: 'text', placeholder: 'Add subtask…' });
-  const nextRank = (t.series || []).length ? Math.max(...(t.series || []).map(s => Math.max(1, Number(s.rank) || 1))) + 1 : 1;
+  const ranksExisting = Array.from(new Set((t.series || []).map(s => Math.max(1, Number(s.rank) || 1))));
+  const nextRank = ranksExisting.length ? Math.max(...ranksExisting) + 1 : 1;
   const addRank = el('input', { type: 'number', min: '1', class: 'series-rank' });
   addRank.value = String(nextRank);
   const addBtn = el('button', { class: 'btn ghost' }, 'Add');
@@ -697,9 +739,32 @@ function buildAvailabilityControls(nodeId, taskId, rerender) {
   addBtn.addEventListener('click', addSeriesItem);
   addText.addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); addSeriesItem(); } });
   seriesAdd.append(addText, addRank, addBtn);
+
+  const rankChips = el('div', { class: 'rank-chips' });
+  let rankOptions = ranksExisting.slice(0, 6);
+  if (!rankOptions.includes(nextRank)) rankOptions.push(nextRank);
+  rankOptions = Array.from(new Set(rankOptions)).sort((a, b) => a - b);
+  const updateRankChipActive = () => {
+    const cur = Math.max(1, Number(addRank.value) || 1);
+    Array.from(rankChips.children).forEach((btn) => {
+      const v = Number(btn.getAttribute('data-rank'));
+      btn.classList.toggle('active', v === cur);
+    });
+  };
+  rankOptions.forEach((r) => {
+    const btn = el('button', { class: 'chip toggle', 'data-rank': String(r) }, `Step ${r}`);
+    btn.addEventListener('click', () => {
+      addRank.value = String(r);
+      updateRankChipActive();
+    });
+    rankChips.append(btn);
+  });
+  addRank.addEventListener('input', updateRankChipActive);
+  updateRankChipActive();
+
   const seriesNote = el('div', { class: 'series-note' }, 'Steps unlock in rank order. All tasks in a rank must be done to reveal the next rank. Tags apply to the whole series.');
-  seriesStack.append(seriesList, seriesAdd, seriesNote);
-  rowSeries.append(seriesStack, el('div'));
+  seriesEditor.append(seriesHeader, seriesList, seriesAdd, rankChips, seriesNote);
+  rowSeries.append(seriesEditor, el('div'));
   avail.append(rowSeries);
 
   // Waiting on
@@ -1134,6 +1199,7 @@ function renderStoryCard() {
     const isSeries = !!stats;
     const done = isSeries ? (stats.remaining === 0) : !!t.completed;
     const item = el('div', { class: 'task' + (done ? ' completed' : '') });
+    if (isSeries) item.classList.add('series-task');
     const cb = el('input', { type: 'checkbox' });
     cb.checked = !!done;
     if (isSeries) {
@@ -1705,11 +1771,18 @@ function renderTasksPane() {
       cb.addEventListener('change', () => { t.completed = cb.checked; store.saveNow(); item.classList.toggle('completed', t.completed); });
     }
     const main = el('div');
-    main.append(el('div', {}, sub ? sub.text : t.text));
+    const titleRow = el('div', { class: 'task-title-row' });
+    if (sub) {
+      const step = Math.max(1, Number(sub.rank) || 1);
+      titleRow.append(el('span', { class: 'pill step' }, `Step ${step}`));
+    }
+    titleRow.append(el('div', { class: 'task-title' }, sub ? sub.text : t.text));
+    main.append(titleRow);
     const reason = availabilityReason(t, now, ctx);
     const ctxLine = nodePath(n) + (reason ? ` • ${reason}` : '');
     main.append(el('div', { class: 'ctx' }, ctxLine));
     if (sub) {
+      item.classList.add('subtask');
       const stats = ref.series || seriesStats(t);
       const step = Math.max(1, Number(sub.rank) || 1);
       const max = stats?.maxRank || step;
