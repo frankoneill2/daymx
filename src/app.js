@@ -2385,6 +2385,9 @@ let tasksViewState = {
   searchText: '',
   archiveAfterDays: 7,
   showArchived: false,
+  sortBy: 'priority',
+  groupBy: 'status',
+  compactMode: false,
   selectionMode: false,
 };
 let selectedTaskKeys = new Set();
@@ -2398,6 +2401,9 @@ function saveTasksViewState() {
     searchText: tasksViewState.searchText,
     archiveAfterDays: tasksViewState.archiveAfterDays,
     showArchived: tasksViewState.showArchived,
+    sortBy: tasksViewState.sortBy,
+    groupBy: tasksViewState.groupBy,
+    compactMode: tasksViewState.compactMode,
   };
   try { localStorage.setItem(TASKS_VIEW_STATE_KEY, JSON.stringify(payload)); } catch {}
 }
@@ -2412,6 +2418,9 @@ function loadTasksViewState() {
   tasksViewState.searchText = (saved.searchText || '').trim();
   tasksViewState.archiveAfterDays = Number(saved.archiveAfterDays) > 0 ? Number(saved.archiveAfterDays) : 7;
   tasksViewState.showArchived = !!saved.showArchived;
+  tasksViewState.sortBy = ['priority', 'due', 'path'].includes(saved.sortBy) ? saved.sortBy : 'priority';
+  tasksViewState.groupBy = ['status', 'none'].includes(saved.groupBy) ? saved.groupBy : 'status';
+  tasksViewState.compactMode = !!saved.compactMode;
 }
 
 function entryKey(ref) {
@@ -2557,22 +2566,162 @@ function renderTasksPane() {
   const root = $('#tasks-root');
   if (!root) return;
   root.innerHTML = '';
+  root.classList.toggle('tasks-compact', !!tasksViewState.compactMode);
   const now = new Date();
   const changedRecurring = runRecurringTasks(now);
   const changedArchive = applyArchivingRules(tasksViewState.archiveAfterDays, now);
   if (changedRecurring || changedArchive) store.saveNow();
   const depMap = allTaskRefMap();
+  const ctx = tasksViewState.currentContext === 'Any' ? null : tasksViewState.currentContext;
+  const locSet = new Set(uniqTags(tasksViewState.locationTags || []).map(l => l.toLowerCase()));
+  const maxDur = normalizeDurationValue(tasksViewState.durationMax);
+  const textNeedle = (tasksViewState.searchText || '').trim().toLowerCase();
+
+  const allEntries = flattenTaskEntries();
+  const baseFiltered = allEntries.filter((ref) => {
+    const base = ref.task;
+    const okCtx = passesContext(base, ctx);
+    const okLoc = locSet.size === 0 || taskLocations(base).some(l => locSet.has(l.toLowerCase()));
+    const dur = taskDurationMins(base);
+    const okTime = !maxDur || (dur != null && dur <= maxDur);
+    const textHay = [
+      ref.kind === 'subtask' ? ref.subtask.text : base.text,
+      nodePath(ref.node),
+      base.text,
+      taskLocations(base).join(' '),
+      (base.contexts || []).join(' '),
+    ].join(' ').toLowerCase();
+    const okSearch = !textNeedle || textHay.includes(textNeedle);
+    const archivedAt = ref.kind === 'subtask' ? ref.subtask.archivedAt : base.archivedAt;
+    const okArchived = tasksViewState.showArchived ? true : !archivedAt;
+    return okCtx && okLoc && okTime && okSearch && okArchived;
+  });
+
+  const enriched = baseFiltered.map((ref) => {
+    const base = ref.task;
+    const sub = ref.kind === 'subtask' ? ref.subtask : null;
+    const done = sub ? !!sub.completed : !!base.completed;
+    const available = done ? true : isTaskAvailable(base, now, ctx, depMap);
+    const reason = availabilityReason(base, now, ctx, depMap);
+    const due = dueStatus(base, now);
+    const archivedAt = ref.kind === 'subtask' ? sub?.archivedAt : base.archivedAt;
+    return { ...ref, done, available, reason, due, archivedAt };
+  });
+
+  const stats = {
+    total: enriched.length,
+    ready: enriched.filter(e => !e.done && e.available).length,
+    blocked: enriched.filter(e => !e.done && !e.available).length,
+    done: enriched.filter(e => e.done).length,
+    urgent: enriched.filter(e => !e.done && (e.due.state === 'overdue' || e.due.state === 'soon')).length,
+  };
+
+  let entries = tasksViewState.showBlocked ? enriched : enriched.filter(e => e.available || e.done);
+  const sorters = {
+    priority: (a, b) => {
+      const pa = a.task.priority || 3;
+      const pb = b.task.priority || 3;
+      if (pa !== pb) return pa - pb;
+      const aa = a.available ? 0 : 1;
+      const bb = b.available ? 0 : 1;
+      if (aa !== bb) return aa - bb;
+      const da = a.task.availableAt ? new Date(a.task.availableAt).getTime() : Infinity;
+      const db = b.task.availableAt ? new Date(b.task.availableAt).getTime() : Infinity;
+      return da - db;
+    },
+    due: (a, b) => {
+      const da = a.task.dueAt ? new Date(a.task.dueAt).getTime() : Infinity;
+      const db = b.task.dueAt ? new Date(b.task.dueAt).getTime() : Infinity;
+      if (da !== db) return da - db;
+      return (a.task.priority || 3) - (b.task.priority || 3);
+    },
+    path: (a, b) => {
+      const pa = nodePath(a.node);
+      const pb = nodePath(b.node);
+      const cmp = pa.localeCompare(pb);
+      if (cmp !== 0) return cmp;
+      return (a.task.priority || 3) - (b.task.priority || 3);
+    },
+  };
+  const sortBy = ['priority', 'due', 'path'].includes(tasksViewState.sortBy) ? tasksViewState.sortBy : 'priority';
+  entries = entries.slice().sort(sorters[sortBy]);
+
+  const currentSelectionMap = selectionEntries();
+  selectedTaskKeys = new Set([...selectedTaskKeys].filter(k => currentSelectionMap.has(k)));
 
   // Controls
   const controls = $('#tasks-controls');
   if (controls) {
     controls.innerHTML = '';
+    controls.classList.toggle('compact', !!tasksViewState.compactMode);
     const buildGroup = (labelText, contentEl) => {
       const group = el('div', { class: 'filter-group' });
       group.append(el('div', { class: 'filter-label' }, labelText));
       group.append(contentEl);
       return group;
     };
+    const metric = (label, value, cls = '') => {
+      const card = el('div', { class: `tasks-metric${cls ? ` ${cls}` : ''}` });
+      card.append(el('div', { class: 'tasks-metric-value' }, String(value)));
+      card.append(el('div', { class: 'tasks-metric-label' }, label));
+      return card;
+    };
+
+    const summary = el('div', { class: 'tasks-summary' });
+    summary.append(
+      metric('Matching', stats.total),
+      metric('Ready', stats.ready, 'good'),
+      metric('Blocked', stats.blocked, stats.blocked ? 'warn' : ''),
+      metric('Urgent', stats.urgent, stats.urgent ? 'warn' : ''),
+      metric('Done', stats.done),
+    );
+    controls.append(summary);
+
+    const activeWrap = el('div', { class: 'filter-row active-filters' });
+    let activeCount = 0;
+    const addFilterChip = (label, onClear) => {
+      activeCount += 1;
+      const chip = el('button', { class: 'chip toggle active', type: 'button' }, label);
+      chip.addEventListener('click', () => {
+        onClear();
+        saveTasksViewState();
+        renderTasksPane();
+      });
+      activeWrap.append(chip);
+    };
+    if (textNeedle) addFilterChip(`Search: ${tasksViewState.searchText}`, () => { tasksViewState.searchText = ''; });
+    if (ctx) addFilterChip(`Context: ${ctx}`, () => { tasksViewState.currentContext = 'Any'; });
+    (tasksViewState.locationTags || []).forEach((loc) => {
+      addFilterChip(`Loc: ${loc}`, () => {
+        tasksViewState.locationTags = uniqTags((tasksViewState.locationTags || []).filter(x => x.toLowerCase() !== loc.toLowerCase()));
+      });
+    });
+    if (maxDur) addFilterChip(`Time <= ${formatDuration(maxDur)}`, () => { tasksViewState.durationMax = null; });
+    if (tasksViewState.showBlocked) addFilterChip('Blocked shown', () => { tasksViewState.showBlocked = false; });
+    if (tasksViewState.showArchived) addFilterChip('Archived shown', () => { tasksViewState.showArchived = false; });
+    if (tasksViewState.sortBy !== 'priority') addFilterChip(`Sort: ${tasksViewState.sortBy}`, () => { tasksViewState.sortBy = 'priority'; });
+    if (tasksViewState.groupBy !== 'status') addFilterChip('Flat list', () => { tasksViewState.groupBy = 'status'; });
+    if (tasksViewState.compactMode) addFilterChip('Compact', () => { tasksViewState.compactMode = false; });
+    if (activeCount) {
+      const reset = el('button', { class: 'btn ghost', type: 'button' }, 'Reset Filters');
+      reset.addEventListener('click', () => {
+        tasksViewState.currentContext = 'Any';
+        tasksViewState.locationTags = [];
+        tasksViewState.durationMax = null;
+        tasksViewState.showBlocked = false;
+        tasksViewState.searchText = '';
+        tasksViewState.showArchived = false;
+        tasksViewState.sortBy = 'priority';
+        tasksViewState.groupBy = 'status';
+        tasksViewState.compactMode = false;
+        saveTasksViewState();
+        renderTasksPane();
+      });
+      const row = el('div', { class: 'filter-row' });
+      row.append(activeWrap, reset);
+      controls.append(buildGroup('Active Filters', row));
+    }
+
     const searchRow = el('div', { class: 'filter-row' });
     const searchInput = el('input', { type: 'search', placeholder: 'Search within tasks...' });
     searchInput.value = tasksViewState.searchText || '';
@@ -2646,6 +2795,42 @@ function renderTasksPane() {
       timeRow.append(btn);
     }
     controls.append(buildGroup('Time ≤', timeRow));
+
+    const sortRow = el('div', { class: 'filter-row' });
+    const mkSort = (key, label) => {
+      const active = tasksViewState.sortBy === key;
+      const btn = el('button', { class: `chip toggle${active ? ' active' : ''}`, type: 'button' }, label);
+      btn.addEventListener('click', () => {
+        tasksViewState.sortBy = key;
+        saveTasksViewState();
+        renderTasksPane();
+      });
+      return btn;
+    };
+    sortRow.append(mkSort('priority', 'Priority'), mkSort('due', 'Due'), mkSort('path', 'Path'));
+    controls.append(buildGroup('Sort', sortRow));
+
+    const displayRow = el('div', { class: 'filter-row' });
+    const grouped = el('button', { class: `chip toggle${tasksViewState.groupBy === 'status' ? ' active' : ''}`, type: 'button' }, 'Grouped');
+    grouped.addEventListener('click', () => {
+      tasksViewState.groupBy = 'status';
+      saveTasksViewState();
+      renderTasksPane();
+    });
+    const flat = el('button', { class: `chip toggle${tasksViewState.groupBy === 'none' ? ' active' : ''}`, type: 'button' }, 'Flat');
+    flat.addEventListener('click', () => {
+      tasksViewState.groupBy = 'none';
+      saveTasksViewState();
+      renderTasksPane();
+    });
+    const compact = el('button', { class: `chip toggle${tasksViewState.compactMode ? ' active' : ''}`, type: 'button' }, 'Compact');
+    compact.addEventListener('click', () => {
+      tasksViewState.compactMode = !tasksViewState.compactMode;
+      saveTasksViewState();
+      renderTasksPane();
+    });
+    displayRow.append(grouped, flat, compact);
+    controls.append(buildGroup('Display', displayRow));
 
     const optRow = el('div', { class: 'filter-row' });
     const showLbl = el('label', { class: 'filter-toggle' });
@@ -2755,58 +2940,21 @@ function renderTasksPane() {
     }
     controls.append(buildGroup('Selection', bulkRow));
   }
-
-  const ctx = tasksViewState.currentContext === 'Any' ? null : tasksViewState.currentContext;
-  const locSet = new Set(uniqTags(tasksViewState.locationTags || []).map(l => l.toLowerCase()));
-  const maxDur = normalizeDurationValue(tasksViewState.durationMax);
-  let entries = flattenTaskEntries();
-  const filtered = entries.filter(ref => {
-    const base = ref.task;
-    const okCtx = passesContext(base, ctx);
-    const okLoc = locSet.size === 0 || taskLocations(base).some(l => locSet.has(l.toLowerCase()));
-    const dur = taskDurationMins(base);
-    const okTime = !maxDur || (dur != null && dur <= maxDur);
-    const okAvail = tasksViewState.showBlocked ? true : isTaskAvailable(base, now, ctx, depMap);
-    const textNeedle = (tasksViewState.searchText || '').trim().toLowerCase();
-    const textHay = [
-      ref.kind === 'subtask' ? ref.subtask.text : base.text,
-      nodePath(ref.node),
-      base.text,
-      taskLocations(base).join(' '),
-      (base.contexts || []).join(' '),
-    ].join(' ').toLowerCase();
-    const okSearch = !textNeedle || textHay.includes(textNeedle);
-    const archivedAt = ref.kind === 'subtask' ? ref.subtask.archivedAt : base.archivedAt;
-    const okArchived = tasksViewState.showArchived ? true : !archivedAt;
-    return okCtx && okLoc && okTime && okAvail && okSearch && okArchived;
-  });
-  entries = filtered
-    .sort((a, b) => {
-      const pa = a.task.priority || 3; const pb = b.task.priority || 3;
-      if (pa !== pb) return pa - pb; // 1 highest
-      const aa = isTaskAvailable(a.task, now, ctx, depMap) ? 0 : 1;
-      const bb = isTaskAvailable(b.task, now, ctx, depMap) ? 0 : 1;
-      if (aa !== bb) return aa - bb; // available first
-      const da = a.task.availableAt ? new Date(a.task.availableAt).getTime() : Infinity;
-      const db = b.task.availableAt ? new Date(b.task.availableAt).getTime() : Infinity;
-      return da - db;
-    });
   if (!entries.length) {
-    root.append(el('div', { class: 'empty' }, 'No tasks yet.'));
+    const msg = stats.total ? 'No tasks in the current view.' : 'No tasks match the current filters.';
+    root.append(el('div', { class: 'empty' }, msg));
     return;
   }
-  for (const ref of entries) {
+
+  const makeTaskCard = (ref) => {
     const { task: t, node: n, root: r } = ref;
     const sub = ref.kind === 'subtask' ? ref.subtask : null;
-    const done = sub ? !!sub.completed : !!t.completed;
-    const item = el('div', { class: 'task' + (done ? ' completed' : ''), style: `border-left:6px solid ${r?.color || 'var(--accent)'}` });
-    const due = dueStatus(t, now);
-    if (due.state === 'overdue') item.classList.add('due-overdue');
-    else if (due.state === 'soon') item.classList.add('due-soon');
-    const archivedAt = sub ? sub.archivedAt : t.archivedAt;
-    if (archivedAt) item.classList.add('archived');
+    const item = el('div', { class: 'task' + (ref.done ? ' completed' : ''), style: `border-left:6px solid ${r?.color || 'var(--accent)'}` });
+    if (ref.due.state === 'overdue') item.classList.add('due-overdue');
+    else if (ref.due.state === 'soon') item.classList.add('due-soon');
+    if (ref.archivedAt) item.classList.add('archived');
     const cb = el('input', { type: 'checkbox' });
-    cb.checked = !!done;
+    cb.checked = !!ref.done;
     if (sub) {
       cb.addEventListener('change', () => {
         setSubtaskCompleted(t, sub, cb.checked);
@@ -2821,7 +2969,7 @@ function renderTasksPane() {
       });
     }
     const key = entryKey(ref);
-    const main = el('div');
+    const main = el('div', { class: 'task-main' });
     const titleRow = el('div', { class: 'task-title-row' });
     if (sub) {
       const step = Math.max(1, Number(sub.rank) || 1);
@@ -2838,10 +2986,11 @@ function renderTasksPane() {
       if (!$('#review-stage').hidden) renderStoryCard();
       renderThreads();
     });
+    const priPill = el('span', { class: 'pill tag' }, `P${t.priority || 3}`);
+    titleRow.append(priPill);
     titleRow.append(titleInput);
     main.append(titleRow);
-    const reason = availabilityReason(t, now, ctx, depMap);
-    const ctxLine = nodePath(n) + (reason ? ` • ${reason}` : '');
+    const ctxLine = nodePath(n) + (ref.reason ? ` • ${ref.reason}` : '');
     main.append(el('div', { class: 'ctx' }, ctxLine));
     if (sub) {
       item.classList.add('subtask');
@@ -2888,12 +3037,35 @@ function renderTasksPane() {
     actions.append(pri, availBtn, del);
     item.append(cb, main, actions);
     // Status tint classes
-    if (done) item.classList.add('status-completed');
-    else if (isTaskAvailable(t, now, ctx, depMap)) item.classList.add('status-available');
+    if (ref.done) item.classList.add('status-completed');
+    else if (ref.available) item.classList.add('status-available');
     else item.classList.add('status-blocked');
     // Availability controls in Tasks pane (hidden by default)
     item.append(avail);
-    root.append(item);
+    return item;
+  };
+
+  if (tasksViewState.groupBy === 'status') {
+    const groups = [
+      { key: 'ready', label: 'Ready Now', items: entries.filter(e => !e.done && e.available) },
+      { key: 'blocked', label: 'Blocked / Scheduled', items: entries.filter(e => !e.done && !e.available) },
+      { key: 'done', label: 'Completed', items: entries.filter(e => e.done) },
+    ];
+    groups.forEach((group) => {
+      if (!group.items.length) return;
+      const section = el('section', { class: `task-section task-section-${group.key}` });
+      const header = el('div', { class: 'task-section-head' });
+      header.append(el('h3', {}, group.label));
+      header.append(el('span', { class: 'pill tag' }, `${group.items.length}`));
+      section.append(header);
+      group.items.forEach((entry) => section.append(makeTaskCard(entry)));
+      root.append(section);
+    });
+    return;
+  }
+
+  for (const ref of entries) {
+    root.append(makeTaskCard(ref));
   }
 }
 
