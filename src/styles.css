@@ -421,6 +421,46 @@ button:focus-visible {
   gap: 6px;
 }
 
+.drag-handle {
+  appearance: none;
+  border: 1px solid var(--border-soft);
+  border-radius: 8px;
+  background: linear-gradient(180deg, rgba(15, 27, 42, 0.78), rgba(11, 21, 33, 0.78));
+  color: var(--subtext);
+  padding: 6px 7px;
+  line-height: 1;
+  font-size: 12px;
+  cursor: grab;
+}
+
+.drag-handle:active {
+  cursor: grabbing;
+}
+
+.dragging {
+  opacity: 0.58;
+}
+
+.drop-target {
+  position: relative;
+}
+
+.drop-target::before {
+  content: '';
+  position: absolute;
+  left: 6px;
+  right: 6px;
+  top: -2px;
+  height: 3px;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--accent) 82%, white 18%);
+}
+
+.drop-target.drop-after::before {
+  top: auto;
+  bottom: -2px;
+}
+
 .node-children {
   display: flex;
   flex-direction: column;
@@ -903,6 +943,10 @@ input.task-title-input:focus-visible {
   align-items: start;
 }
 
+.availability .row > * {
+  min-width: 0;
+}
+
 .availability .stack {
   display: flex;
   flex-direction: column;
@@ -910,12 +954,24 @@ input.task-title-input:focus-visible {
 }
 
 .availability .mini-add {
-  display: flex;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
   gap: 6px;
 }
 
-.availability .mini-add input {
+.availability .mini-add input,
+.availability .mini-add select {
   flex: 1;
+  width: 100%;
+  min-width: 0;
+}
+
+.availability .row input[type='text'],
+.availability .row input[type='number'],
+.availability .row input[type='datetime-local'],
+.availability .row select {
+  width: 100%;
+  min-width: 0;
 }
 
 .series-editor {
@@ -1028,7 +1084,7 @@ input.task-title-input:focus-visible {
 
 .series-item {
   display: grid;
-  grid-template-columns: 20px 64px 1fr auto;
+  grid-template-columns: 26px 20px 64px 1fr auto;
   gap: 6px;
   align-items: center;
   padding: 7px;
@@ -1361,6 +1417,16 @@ button.chip.toggle.active {
     grid-template-columns: 1fr;
   }
 
+  .availability .mini-add,
+  .series-add {
+    grid-template-columns: 1fr;
+  }
+
+  .availability .mini-add .btn,
+  .series-add .btn {
+    width: 100%;
+  }
+
   .summary-header {
     flex-direction: column;
     align-items: flex-start;
@@ -1371,7 +1437,7 @@ button.chip.toggle.active {
   }
 
   .series-item {
-    grid-template-columns: 20px 58px 1fr;
+    grid-template-columns: 24px 20px 58px 1fr;
   }
 
   .series-item .btn {

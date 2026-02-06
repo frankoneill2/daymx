@@ -219,6 +219,37 @@ const uiPrefs = {
   captureNodeId: null,
 };
 
+const dragState = {
+  kind: null, // 'node' | 'task' | 'subtask'
+  sourceNodeId: null,
+  sourceTaskId: null,
+  sourceSubtaskId: null,
+  sourceParentId: null,
+};
+
+function setDragState(next) {
+  dragState.kind = next.kind || null;
+  dragState.sourceNodeId = next.sourceNodeId || null;
+  dragState.sourceTaskId = next.sourceTaskId || null;
+  dragState.sourceSubtaskId = next.sourceSubtaskId || null;
+  dragState.sourceParentId = next.sourceParentId || null;
+}
+
+function clearDropIndicators() {
+  $$('.drop-target').forEach((node) => node.classList.remove('drop-target', 'drop-after'));
+}
+
+function clearDragState() {
+  setDragState({ kind: null });
+  clearDropIndicators();
+  $$('.dragging').forEach((node) => node.classList.remove('dragging'));
+}
+
+function isDropAfterPointer(evt, target) {
+  const rect = target.getBoundingClientRect();
+  return evt.clientY > rect.top + rect.height / 2;
+}
+
 function showToast(message, kind = 'info') {
   const node = $('#toast');
   if (!node) return;
@@ -343,6 +374,7 @@ function createSubtask(text = '', rank = 1) {
     id: uid('s'),
     text,
     rank: Math.max(1, Number(rank) || 1),
+    order: 0,
     completed: false,
     createdAt: ts,
     completedAt: null,
@@ -428,6 +460,68 @@ function findNodeParentInfo(targetId) {
     stack.push(...kids);
   }
   return null;
+}
+
+function reorderListByIndex(list, fromIndex, targetIndex, placeAfter = false) {
+  if (!Array.isArray(list)) return false;
+  if (fromIndex < 0 || targetIndex < 0 || fromIndex >= list.length || targetIndex >= list.length) return false;
+  if (fromIndex === targetIndex) return false;
+  const [moved] = list.splice(fromIndex, 1);
+  let insertAt = placeAfter ? targetIndex + 1 : targetIndex;
+  if (fromIndex < insertAt) insertAt -= 1;
+  list.splice(insertAt, 0, moved);
+  return true;
+}
+
+function moveNodeRelative(sourceId, targetId, placeAfter = false) {
+  const fromInfo = findNodeParentInfo(sourceId);
+  const toInfo = findNodeParentInfo(targetId);
+  if (!fromInfo || !toInfo) return false;
+  // Sibling-only DnD keeps hierarchy predictable.
+  if (fromInfo.list !== toInfo.list) return false;
+  return reorderListByIndex(fromInfo.list, fromInfo.index, toInfo.index, placeAfter);
+}
+
+function moveTaskRelative(nodeId, sourceTaskId, targetTaskId, placeAfter = false) {
+  const node = findNodeById(store.data.threads || [], nodeId);
+  if (!node || !Array.isArray(node.tasks)) return false;
+  const fromIndex = node.tasks.findIndex((t) => t.id === sourceTaskId);
+  const targetIndex = node.tasks.findIndex((t) => t.id === targetTaskId);
+  return reorderListByIndex(node.tasks, fromIndex, targetIndex, placeAfter);
+}
+
+function refreshSeriesOrder(task) {
+  (task.series || []).forEach((s, idx) => { s.order = idx; });
+}
+
+function sortSeriesByRankOrder(task) {
+  const list = task?.series;
+  if (!Array.isArray(list)) return;
+  list.sort((a, b) => {
+    const ra = Math.max(1, Number(a.rank) || 1);
+    const rb = Math.max(1, Number(b.rank) || 1);
+    if (ra !== rb) return ra - rb;
+    const oa = Number.isFinite(a.order) ? Number(a.order) : 0;
+    const ob = Number.isFinite(b.order) ? Number(b.order) : 0;
+    if (oa !== ob) return oa - ob;
+    return (a.text || '').localeCompare(b.text || '');
+  });
+  refreshSeriesOrder(task);
+}
+
+function moveSubtaskRelative(nodeId, taskId, sourceSubtaskId, targetSubtaskId, placeAfter = false) {
+  const node = findNodeById(store.data.threads || [], nodeId);
+  const task = (node?.tasks || []).find((t) => t.id === taskId);
+  const list = task?.series;
+  if (!Array.isArray(list)) return false;
+  const source = list.find((s) => s.id === sourceSubtaskId);
+  const target = list.find((s) => s.id === targetSubtaskId);
+  if (!source || !target || source.id === target.id) return false;
+  source.rank = Math.max(1, Number(target.rank) || 1);
+  const targetOrder = Number.isFinite(target.order) ? Number(target.order) : 0;
+  source.order = targetOrder + (placeAfter ? 0.5 : -0.5);
+  sortSeriesByRankOrder(task);
+  return true;
 }
 
 // Reordering helpers (pantry categories)
@@ -547,11 +641,13 @@ function normalizeNode(n) {
       if (!s.id) s.id = uid('s');
       s.text = s.text || '';
       s.rank = Math.max(1, Number(s.rank) || 1);
+      if (!('order' in s) || !Number.isFinite(s.order)) s.order = 0;
       if (typeof s.completed !== 'boolean') s.completed = !!s.completed;
       if (!('createdAt' in s)) s.createdAt = nowIso();
       if (!('completedAt' in s)) s.completedAt = null;
       if (!('archivedAt' in s)) s.archivedAt = null;
     });
+    sortSeriesByRankOrder(t);
     if (t.completed && !t.completedAt) t.completedAt = t.createdAt || nowIso();
   });
   n.children.forEach(normalizeNode);
@@ -1066,6 +1162,9 @@ function buildAvailabilityControls(nodeId, taskId, rerender) {
     const ra = Math.max(1, Number(a.rank) || 1);
     const rb = Math.max(1, Number(b.rank) || 1);
     if (ra !== rb) return ra - rb;
+    const oa = Number.isFinite(a.order) ? Number(a.order) : 0;
+    const ob = Number.isFinite(b.order) ? Number(b.order) : 0;
+    if (oa !== ob) return oa - ob;
     return (a.text || '').localeCompare(b.text || '');
   });
   if (!seriesItems.length) {
@@ -1089,20 +1188,60 @@ function buildAvailabilityControls(nodeId, taskId, rerender) {
       const list = el('div', { class: 'series-group-list' });
       items.forEach((s) => {
         const row = el('div', { class: 'series-item' + (s.completed ? ' completed' : '') });
-        const cb = el('input', { type: 'checkbox' });
-      cb.checked = !!s.completed;
-      cb.addEventListener('change', () => {
-        updateTask(task => {
-          const sub = (task.series || []).find(x => x.id === s.id);
-          if (sub) setSubtaskCompleted(task, sub, cb.checked);
+        const drag = el('button', { class: 'drag-handle', title: 'Drag to reorder', draggable: 'true', type: 'button' }, '⋮⋮');
+        drag.addEventListener('dragstart', (e) => {
+          setDragState({
+            kind: 'subtask',
+            sourceNodeId: nodeId,
+            sourceTaskId: taskId,
+            sourceSubtaskId: s.id,
+            sourceParentId: taskId,
+          });
+          row.classList.add('dragging');
+          try {
+            e.dataTransfer.effectAllowed = 'move';
+            e.dataTransfer.setData('text/plain', `subtask:${s.id}`);
+          } catch {}
         });
-      });
+        drag.addEventListener('dragend', clearDragState);
+        row.addEventListener('dragover', (e) => {
+          if (dragState.kind !== 'subtask') return;
+          if (!dragState.sourceSubtaskId || dragState.sourceSubtaskId === s.id) return;
+          if (dragState.sourceParentId !== taskId) return;
+          e.preventDefault();
+          const after = isDropAfterPointer(e, row);
+          clearDropIndicators();
+          row.classList.add('drop-target');
+          row.classList.toggle('drop-after', after);
+        });
+        row.addEventListener('drop', (e) => {
+          if (dragState.kind !== 'subtask') return;
+          if (!dragState.sourceSubtaskId || dragState.sourceSubtaskId === s.id) return;
+          if (dragState.sourceParentId !== taskId) return;
+          e.preventDefault();
+          const placeAfter = row.classList.contains('drop-after');
+          const moved = moveSubtaskRelative(nodeId, taskId, dragState.sourceSubtaskId, s.id, placeAfter);
+          clearDragState();
+          if (!moved) return;
+          store.saveNow();
+          rerender && rerender();
+          showToast('Subtask order updated');
+        });
+        const cb = el('input', { type: 'checkbox' });
+        cb.checked = !!s.completed;
+        cb.addEventListener('change', () => {
+          updateTask(task => {
+            const sub = (task.series || []).find(x => x.id === s.id);
+            if (sub) setSubtaskCompleted(task, sub, cb.checked);
+          });
+        });
         const rankInput = el('input', { type: 'number', min: '1', class: 'series-rank' });
         rankInput.value = String(Math.max(1, Number(s.rank) || 1));
         rankInput.addEventListener('change', () => {
           updateTask(task => {
             const sub = (task.series || []).find(x => x.id === s.id);
             if (sub) sub.rank = Math.max(1, Number(rankInput.value) || 1);
+            sortSeriesByRankOrder(task);
           });
         });
         const textInput = el('input', { type: 'text', class: 'series-text' });
@@ -1117,9 +1256,10 @@ function buildAvailabilityControls(nodeId, taskId, rerender) {
         del.addEventListener('click', () => {
           updateTask(task => {
             task.series = (task.series || []).filter(x => x.id !== s.id);
+            sortSeriesByRankOrder(task);
           });
         });
-        row.append(cb, rankInput, textInput, del);
+        row.append(drag, cb, rankInput, textInput, del);
         list.append(row);
       });
       group.append(header, list);
@@ -1137,7 +1277,12 @@ function buildAvailabilityControls(nodeId, taskId, rerender) {
   const addSeriesItem = () => {
     const txt = addText.value.trim(); if (!txt) return;
     const rank = Math.max(1, Number(addRank.value) || 1);
-    updateTask(task => { task.series = (task.series || []).concat([createSubtask(txt, rank)]); });
+    updateTask(task => {
+      const item = createSubtask(txt, rank);
+      item.order = (task.series || []).length;
+      task.series = (task.series || []).concat([item]);
+      sortSeriesByRankOrder(task);
+    });
     addText.value = '';
     addRank.value = String(rank);
   };
@@ -1224,6 +1369,41 @@ function renderNode(node, depMap = null) {
   titleWrap.append(caret, colorDot, titleInput);
   const actions = el('div', { class: 'node-actions' });
 
+  const dragHandle = el('button', { class: 'drag-handle', title: 'Drag to reorder', draggable: 'true', type: 'button' }, '⋮⋮');
+  dragHandle.addEventListener('dragstart', (e) => {
+    setDragState({ kind: 'node', sourceNodeId: node.id });
+    container.classList.add('dragging');
+    try {
+      e.dataTransfer.effectAllowed = 'move';
+      e.dataTransfer.setData('text/plain', `node:${node.id}`);
+    } catch {}
+  });
+  dragHandle.addEventListener('dragend', clearDragState);
+  container.addEventListener('dragover', (e) => {
+    if (dragState.kind !== 'node') return;
+    if (!dragState.sourceNodeId || dragState.sourceNodeId === node.id) return;
+    e.preventDefault();
+    const after = isDropAfterPointer(e, container);
+    clearDropIndicators();
+    container.classList.add('drop-target');
+    container.classList.toggle('drop-after', after);
+  });
+  container.addEventListener('drop', (e) => {
+    if (dragState.kind !== 'node') return;
+    if (!dragState.sourceNodeId || dragState.sourceNodeId === node.id) return;
+    e.preventDefault();
+    const placeAfter = container.classList.contains('drop-after');
+    const moved = moveNodeRelative(dragState.sourceNodeId, node.id, placeAfter);
+    clearDragState();
+    if (!moved) return;
+    store.saveNow();
+    recomputeIndexes();
+    renderThreads();
+    if (!$('#review-stage').hidden) { renderProgress(); renderStoryCard(); }
+    if (!$('#view-tasks').hidden) renderTasksPane();
+    showToast('Thread order updated');
+  });
+
   const btnAddChild = el('button', { class: 'btn ghost' }, '+ Subthread');
   btnAddChild.addEventListener('click', () => {
     const name = confirmName('New subthread name', '');
@@ -1247,7 +1427,7 @@ function renderNode(node, depMap = null) {
   const en = el('input', { type: 'checkbox' }); en.checked = node.enabled !== false; en.addEventListener('change', ()=>{ node.enabled = en.checked; store.save(); renderThreads(); });
   enabledToggle.append(en, document.createTextNode(' Enabled'));
 
-  actions.append(moveUp, moveDown, btnAddChild, btnQuestions, btnTasks, enabledToggle);
+  actions.append(dragHandle, moveUp, moveDown, btnAddChild, btnQuestions, btnTasks, enabledToggle);
   header.append(titleWrap, actions);
   container.append(header);
 
@@ -1304,6 +1484,41 @@ function renderNode(node, depMap = null) {
     label.value = t.text;
     label.addEventListener('change', () => { t.text = label.value.trim() || t.text; store.saveNow(); });
     const actions = el('div', { class: 'meta' });
+    const taskDrag = el('button', { class: 'drag-handle', title: 'Drag to reorder', draggable: 'true', type: 'button' }, '⋮⋮');
+    taskDrag.addEventListener('dragstart', (e) => {
+      setDragState({ kind: 'task', sourceNodeId: node.id, sourceTaskId: t.id, sourceParentId: node.id });
+      row.classList.add('dragging');
+      try {
+        e.dataTransfer.effectAllowed = 'move';
+        e.dataTransfer.setData('text/plain', `task:${t.id}`);
+      } catch {}
+    });
+    taskDrag.addEventListener('dragend', clearDragState);
+    row.addEventListener('dragover', (e) => {
+      if (dragState.kind !== 'task') return;
+      if (!dragState.sourceTaskId || dragState.sourceTaskId === t.id) return;
+      if (dragState.sourceParentId !== node.id) return;
+      e.preventDefault();
+      const after = isDropAfterPointer(e, row);
+      clearDropIndicators();
+      row.classList.add('drop-target');
+      row.classList.toggle('drop-after', after);
+    });
+    row.addEventListener('drop', (e) => {
+      if (dragState.kind !== 'task') return;
+      if (!dragState.sourceTaskId || dragState.sourceTaskId === t.id) return;
+      if (dragState.sourceParentId !== node.id) return;
+      e.preventDefault();
+      const placeAfter = row.classList.contains('drop-after');
+      const moved = moveTaskRelative(node.id, dragState.sourceTaskId, t.id, placeAfter);
+      clearDragState();
+      if (!moved) return;
+      store.saveNow();
+      renderThreads();
+      if (!$('#review-stage').hidden) { renderProgress(); renderStoryCard(); }
+      if (!$('#view-tasks').hidden) renderTasksPane();
+      showToast('Task order updated');
+    });
     const pri = el('select', { class: 'priority-select', title: 'Priority' });
     for (let i = 1; i <= 5; i++) pri.append(el('option', { value: String(i) }, i));
     pri.value = String(t.priority || 3);
@@ -1317,7 +1532,7 @@ function renderNode(node, depMap = null) {
     avail.hidden = true;
     const availBtn = el('button', { class: 'btn ghost' }, 'Tags');
     availBtn.addEventListener('click', () => { avail.hidden = !avail.hidden; });
-    actions.append(pri, availBtn, del);
+    actions.append(taskDrag, pri, availBtn, del);
     top.append(label, actions);
     // status tint
     if (t.completed) row.classList.add('status-completed');
