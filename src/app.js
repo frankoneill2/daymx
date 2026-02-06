@@ -226,6 +226,25 @@ const gamificationState = {
   daily: {},
 };
 
+const openTagPanels = {
+  prepare: new Set(),
+  review: new Set(),
+  tasks: new Set(),
+};
+
+function isTagPanelOpen(view, taskId) {
+  const set = openTagPanels[view];
+  if (!set || !taskId) return false;
+  return set.has(taskId);
+}
+
+function setTagPanelOpen(view, taskId, open) {
+  const set = openTagPanels[view];
+  if (!set || !taskId) return;
+  if (open) set.add(taskId);
+  else set.delete(taskId);
+}
+
 function dayKeyFromDate(date = new Date()) {
   const d = date instanceof Date ? date : new Date(date);
   if (isNaN(d)) return '';
@@ -1052,7 +1071,8 @@ function buildBreakIntoStepsCta(onAddStep) {
       return;
     }
     if (onAddStep(value) === false) return;
-    closeCompose();
+    input.value = '';
+    input.focus();
   };
   add.addEventListener('click', addStep);
   cancel.addEventListener('click', closeCompose);
@@ -1693,9 +1713,12 @@ function renderNode(node, depMap = null) {
       store.save(); renderThreads();
     });
     const avail = buildAvailabilityControls(node.id, t.id, () => renderThreads());
-    avail.hidden = true;
+    avail.hidden = !isTagPanelOpen('prepare', t.id);
     const availBtn = el('button', { class: 'btn ghost' }, 'Tags');
-    availBtn.addEventListener('click', () => { avail.hidden = !avail.hidden; });
+    availBtn.addEventListener('click', () => {
+      avail.hidden = !avail.hidden;
+      setTagPanelOpen('prepare', t.id, !avail.hidden);
+    });
     actions.append(taskDrag, pri, availBtn, del);
     top.append(label, actions);
     // status tint
@@ -2027,9 +2050,12 @@ function renderStoryCard() {
       store.saveNow(); renderStoryCard(); renderProgress();
     });
     const avail = buildAvailabilityControls(n.id, t.id, () => renderStoryCard());
-    avail.hidden = true;
+    avail.hidden = !isTagPanelOpen('review', t.id);
     const availBtn = el('button', { class: 'btn ghost' }, 'Tags');
-    availBtn.addEventListener('click', () => { avail.hidden = !avail.hidden; });
+    availBtn.addEventListener('click', () => {
+      avail.hidden = !avail.hidden;
+      setTagPanelOpen('review', t.id, !avail.hidden);
+    });
     btns.append(pri, availBtn, delBtn);
     const reason = availabilityReason(t, now, null, depMap);
     const tagline = buildTaskTagline(t, reason);
@@ -2040,6 +2066,7 @@ function renderStoryCard() {
         const ti = live?.tasks?.findIndex(x => x.id === t.id) ?? -1;
         if (ti < 0) return false;
         addSubtaskToTask(live.tasks[ti], stepText, 1);
+        setTagPanelOpen('review', t.id, true);
         store.saveNow();
         renderThreads();
         renderProgress();
@@ -3220,6 +3247,7 @@ function renderTasksPane() {
     if (!sub && !isSeriesTask(t)) {
       const breakdown = buildBreakIntoStepsCta((stepText) => {
         addSubtaskToTask(t, stepText, 1);
+        setTagPanelOpen('tasks', t.id, true);
         store.saveNow();
         renderThreads();
         if (!$('#review-stage').hidden) {
@@ -3248,9 +3276,12 @@ function renderTasksPane() {
       }
     });
     const avail = buildAvailabilityControls(n.id, t.id, () => renderTasksPane());
-    avail.hidden = true;
+    avail.hidden = !isTagPanelOpen('tasks', t.id);
     const availBtn = el('button', { class: 'btn ghost' }, 'Tags');
-    availBtn.addEventListener('click', () => { avail.hidden = !avail.hidden; });
+    availBtn.addEventListener('click', () => {
+      avail.hidden = !avail.hidden;
+      setTagPanelOpen('tasks', t.id, !avail.hidden);
+    });
     if (tasksViewState.selectionMode) {
       const pick = el('input', { type: 'checkbox', title: 'Select task' });
       pick.checked = selectedTaskKeys.has(key);
