@@ -2646,6 +2646,19 @@ function renderTasksPane() {
   const sortBy = ['priority', 'due', 'path'].includes(tasksViewState.sortBy) ? tasksViewState.sortBy : 'priority';
   entries = entries.slice().sort(sorters[sortBy]);
 
+  const seenEstimateTasks = new Set();
+  let estimateTaggedMins = 0;
+  let estimateTaggedCount = 0;
+  entries.forEach((ref) => {
+    if (ref.done) return;
+    if (seenEstimateTasks.has(ref.task.id)) return;
+    seenEstimateTasks.add(ref.task.id);
+    const mins = taskDurationMins(ref.task);
+    if (!mins) return;
+    estimateTaggedMins += mins;
+    estimateTaggedCount += 1;
+  });
+
   const currentSelectionMap = selectionEntries();
   selectedTaskKeys = new Set([...selectedTaskKeys].filter(k => currentSelectionMap.has(k)));
 
@@ -2668,8 +2681,10 @@ function renderTasksPane() {
     };
 
     const summary = el('div', { class: 'tasks-summary' });
+    const estimateLabel = formatDuration(estimateTaggedMins) || '0m';
     summary.append(
       metric('Matching', stats.total),
+      metric('Est. Time', estimateLabel, estimateTaggedCount ? 'good' : ''),
       metric('Ready', stats.ready, 'good'),
       metric('Blocked', stats.blocked, stats.blocked ? 'warn' : ''),
       metric('Urgent', stats.urgent, stats.urgent ? 'warn' : ''),
