@@ -3236,7 +3236,7 @@ function renderTasksPane() {
       cb.addEventListener('change', () => {
         setTaskCompleted(t, cb.checked);
         store.saveNow();
-        item.classList.toggle('completed', t.completed);
+        renderTasksPane();
       });
     }
     const key = entryKey(ref);
