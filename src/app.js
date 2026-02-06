@@ -6,6 +6,9 @@
 const STORAGE_KEY = 'daymx-data-v1';
 const REVIEW_STATE_KEY = 'daymx-review-state-v1';
 const PANTRY_REVIEW_STATE_KEY = 'daymx-pantry-review-state-v1';
+const TASKS_VIEW_STATE_KEY = 'daymx-tasks-view-v2';
+const UI_PREFS_KEY = 'daymx-ui-prefs-v1';
+const HISTORY_LIMIT = 80;
 
 function uid(prefix = 'id') {
   return `${prefix}_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 7)}`;
@@ -102,12 +105,37 @@ function seriesSummary(t) {
   return `Series ${stats.done}/${stats.total} • ${step}`;
 }
 
+function nowIso() {
+  return new Date().toISOString();
+}
+
+function safeJsonParse(raw, fallback = null) {
+  try {
+    const parsed = JSON.parse(raw);
+    return parsed == null ? fallback : parsed;
+  } catch {
+    return fallback;
+  }
+}
+
+function serializeData(data) {
+  return JSON.stringify(data);
+}
+
+function parseIsoDate(value) {
+  if (!value) return null;
+  const d = new Date(value);
+  if (isNaN(d)) return null;
+  return d;
+}
+
 const store = {
   data: null,
   mode: 'local', // 'local' | 'firebase'
   unsub: null,
   saveTimer: null,
   saveNow(dataOverride) {
+    if (!dataOverride) pushHistorySnapshot();
     if (this.mode === 'firebase') {
       try {
         const payload = dataOverride || JSON.parse(JSON.stringify(this.data));
@@ -141,6 +169,7 @@ const store = {
         autoAssignThreadColors();
         recomputeIndexes();
         renderThreads();
+        historyState.lastSerialized = serializeData(this.data);
         // If review is visible, refresh progress/card state
         if (!$('#review-stage').hidden) { renderProgress(); renderStoryCard(); }
         if (!$('#view-tasks').hidden) { renderTasksPane(); }
@@ -163,6 +192,7 @@ const store = {
     if (!this.data.pantry) this.data.pantry = { categories: [] };
   },
   async save() {
+    pushHistorySnapshot();
     if (this.mode === 'firebase') {
       clearTimeout(this.saveTimer);
       this.saveTimer = setTimeout(async () => {
@@ -173,6 +203,103 @@ const store = {
     }
   },
 };
+
+const historyState = {
+  undo: [],
+  redo: [],
+  lastSerialized: '',
+  applying: false,
+};
+
+let toastTimer = null;
+
+const uiPrefs = {
+  lastView: 'prepare',
+  pantryTab: 'prepare',
+  captureNodeId: null,
+};
+
+function showToast(message, kind = 'info') {
+  const node = $('#toast');
+  if (!node) return;
+  node.textContent = message;
+  node.hidden = false;
+  node.className = `toast ${kind}`;
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => {
+    node.hidden = true;
+  }, 1900);
+}
+
+function persistUiPrefs() {
+  try { localStorage.setItem(UI_PREFS_KEY, JSON.stringify(uiPrefs)); } catch {}
+}
+
+function loadUiPrefs() {
+  const saved = safeJsonParse(localStorage.getItem(UI_PREFS_KEY), null);
+  if (!saved || typeof saved !== 'object') return;
+  uiPrefs.lastView = saved.lastView || uiPrefs.lastView;
+  uiPrefs.pantryTab = saved.pantryTab || uiPrefs.pantryTab;
+  uiPrefs.captureNodeId = saved.captureNodeId || uiPrefs.captureNodeId;
+}
+
+function resetHistoryBaseline() {
+  historyState.undo = [];
+  historyState.redo = [];
+  historyState.lastSerialized = serializeData(store.data);
+}
+
+function pushHistorySnapshot() {
+  if (historyState.applying) return;
+  const current = serializeData(store.data);
+  if (!historyState.lastSerialized) {
+    historyState.lastSerialized = current;
+    return;
+  }
+  if (current === historyState.lastSerialized) return;
+  historyState.undo.push(historyState.lastSerialized);
+  if (historyState.undo.length > HISTORY_LIMIT) historyState.undo.shift();
+  historyState.redo = [];
+  historyState.lastSerialized = current;
+}
+
+function rerenderAll() {
+  recomputeIndexes();
+  renderThreads();
+  if (!$('#review-stage').hidden) { renderProgress(); renderStoryCard(); }
+  if (!$('#view-tasks').hidden) renderTasksPane();
+  if (!$('#view-pantry').hidden) renderPantryActiveView();
+}
+
+function applyHistorySnapshot(serialized, pushTo) {
+  const current = serializeData(store.data);
+  historyState.applying = true;
+  if (pushTo === 'redo') historyState.redo.push(current);
+  else if (pushTo === 'undo') historyState.undo.push(current);
+  store.data = safeJsonParse(serialized, defaultData()) || defaultData();
+  if (!store.data.pantry) store.data.pantry = { categories: [] };
+  (store.data.threads || []).forEach(normalizeNode);
+  (store.data.pantry.categories || []).forEach(normalizeCategory);
+  autoAssignThreadColors();
+  rerenderAll();
+  historyState.lastSerialized = serializeData(store.data);
+  historyState.applying = false;
+  store.saveNow();
+}
+
+function undoChange() {
+  if (!historyState.undo.length) { showToast('Nothing to undo'); return; }
+  const prev = historyState.undo.pop();
+  applyHistorySnapshot(prev, 'redo');
+  showToast('Undid last change');
+}
+
+function redoChange() {
+  if (!historyState.redo.length) { showToast('Nothing to redo'); return; }
+  const next = historyState.redo.pop();
+  applyHistorySnapshot(next, 'undo');
+  showToast('Redid change');
+}
 
 // ------------------------------
 // Data helpers
@@ -186,11 +313,41 @@ function createQuestion(text = '') {
 }
 
 function createTask(text = '') {
-  return { id: uid('t'), text, completed: false, priority: 3, availableAt: null, contexts: [], waitingOn: '', followUpAt: null, loc: '', locations: [], duration: null, series: [] };
+  const ts = nowIso();
+  return {
+    id: uid('t'),
+    text,
+    createdAt: ts,
+    completed: false,
+    completedAt: null,
+    archivedAt: null,
+    priority: 3,
+    availableAt: null,
+    dueAt: null,
+    contexts: [],
+    blockedBy: [],
+    waitingOn: '',
+    followUpAt: null,
+    recurrence: 'none',
+    nextRecurringAt: null,
+    loc: '',
+    locations: [],
+    duration: null,
+    series: [],
+  };
 }
 
 function createSubtask(text = '', rank = 1) {
-  return { id: uid('s'), text, rank: Math.max(1, Number(rank) || 1), completed: false };
+  const ts = nowIso();
+  return {
+    id: uid('s'),
+    text,
+    rank: Math.max(1, Number(rank) || 1),
+    completed: false,
+    createdAt: ts,
+    completedAt: null,
+    archivedAt: null,
+  };
 }
 
 // Pantry creators
@@ -359,11 +516,22 @@ function normalizeNode(n) {
   if (typeof n.collapsed !== 'boolean') n.collapsed = false;
   n.tasks.forEach(t => {
     if (typeof t.completed !== 'boolean') t.completed = !!t.completed;
+    if (!('createdAt' in t)) t.createdAt = nowIso();
+    if (!('completedAt' in t)) t.completedAt = null;
+    if (!('archivedAt' in t)) t.archivedAt = null;
     if (typeof t.priority !== 'number' || t.priority < 1 || t.priority > 5) t.priority = 3;
     if (!('availableAt' in t)) t.availableAt = null;
+    if (!('dueAt' in t)) t.dueAt = null;
     if (!('contexts' in t)) t.contexts = [];
+    if (!Array.isArray(t.contexts)) t.contexts = [];
+    if (!('blockedBy' in t)) t.blockedBy = [];
+    if (!Array.isArray(t.blockedBy)) t.blockedBy = [];
+    t.blockedBy = t.blockedBy.filter(Boolean);
     if (!('waitingOn' in t)) t.waitingOn = '';
     if (!('followUpAt' in t)) t.followUpAt = null;
+    if (!('recurrence' in t)) t.recurrence = 'none';
+    if (!['none', 'daily', 'weekly', 'monthly'].includes(t.recurrence)) t.recurrence = 'none';
+    if (!('nextRecurringAt' in t)) t.nextRecurringAt = null;
     if (!('loc' in t)) t.loc = '';
     if (!('locations' in t)) t.locations = [];
     if (!Array.isArray(t.locations)) t.locations = [];
@@ -380,7 +548,11 @@ function normalizeNode(n) {
       s.text = s.text || '';
       s.rank = Math.max(1, Number(s.rank) || 1);
       if (typeof s.completed !== 'boolean') s.completed = !!s.completed;
+      if (!('createdAt' in s)) s.createdAt = nowIso();
+      if (!('completedAt' in s)) s.completedAt = null;
+      if (!('archivedAt' in s)) s.archivedAt = null;
     });
+    if (t.completed && !t.completedAt) t.completedAt = t.createdAt || nowIso();
   });
   n.children.forEach(normalizeNode);
 }
@@ -423,8 +595,142 @@ function toLocalInputValue(iso) {
   return `${yyyy}-${mm}-${dd}T${hh}:${mi}`;
 }
 
-function isTaskAvailable(t, now = new Date(), currentContext = null) {
+function nextRecurringAt(cadence, fromDate = new Date()) {
+  const d = new Date(fromDate);
+  if (isNaN(d)) return null;
+  if (cadence === 'daily') d.setDate(d.getDate() + 1);
+  else if (cadence === 'weekly') d.setDate(d.getDate() + 7);
+  else if (cadence === 'monthly') d.setMonth(d.getMonth() + 1);
+  else return null;
+  return d.toISOString();
+}
+
+function dueStatus(task, now = new Date()) {
+  const due = parseIsoDate(task?.dueAt);
+  if (!due) return { state: 'none', label: '' };
+  if (due < now) return { state: 'overdue', label: `Overdue ${due.toLocaleString()}` };
+  if ((due.getTime() - now.getTime()) <= 24 * 60 * 60 * 1000) return { state: 'soon', label: `Due ${due.toLocaleString()}` };
+  return { state: 'upcoming', label: `Due ${due.toLocaleDateString()}` };
+}
+
+function setTaskCompleted(task, completed, now = new Date()) {
+  task.completed = !!completed;
+  if (task.completed) {
+    task.completedAt = now.toISOString();
+    if (task.recurrence && task.recurrence !== 'none') task.nextRecurringAt = nextRecurringAt(task.recurrence, now);
+  } else {
+    task.completedAt = null;
+    task.archivedAt = null;
+    task.nextRecurringAt = null;
+  }
+}
+
+function setSubtaskCompleted(task, subtask, completed, now = new Date()) {
+  subtask.completed = !!completed;
+  if (subtask.completed) subtask.completedAt = now.toISOString();
+  else {
+    subtask.completedAt = null;
+    subtask.archivedAt = null;
+  }
+  const stats = seriesStats(task);
+  if (!stats) return;
+  if (stats.remaining === 0) setTaskCompleted(task, true, now);
+  else {
+    task.completed = false;
+    task.completedAt = null;
+    task.archivedAt = null;
+    task.nextRecurringAt = null;
+  }
+}
+
+function allTaskRefMap() {
+  const map = new Map();
+  flattenTaskRefs().forEach(ref => map.set(ref.task.id, ref));
+  return map;
+}
+
+function unresolvedDependencyIds(task, refs = null) {
+  const ids = Array.isArray(task?.blockedBy) ? task.blockedBy : [];
+  if (!ids.length) return [];
+  const map = refs || allTaskRefMap();
+  return ids.filter((id) => {
+    const dep = map.get(id)?.task;
+    return dep && !dep.completed;
+  });
+}
+
+function dependencyNames(task, refs = null) {
+  const map = refs || allTaskRefMap();
+  const ids = unresolvedDependencyIds(task, map);
+  if (!ids.length) return [];
+  return ids.map(id => map.get(id)?.task?.text || 'Dependency');
+}
+
+function runRecurringTasks(now = new Date()) {
+  let changed = false;
+  flattenTaskRefs().forEach(({ task }) => {
+    if (!task.recurrence || task.recurrence === 'none' || !task.nextRecurringAt) return;
+    const due = parseIsoDate(task.nextRecurringAt);
+    if (!due || now < due) return;
+    task.completed = false;
+    task.completedAt = null;
+    task.archivedAt = null;
+    task.nextRecurringAt = null;
+    if (isSeriesTask(task)) {
+      task.series.forEach((s) => {
+        s.completed = false;
+        s.completedAt = null;
+        s.archivedAt = null;
+      });
+    }
+    changed = true;
+  });
+  return changed;
+}
+
+function applyArchivingRules(days = 7, now = new Date()) {
+  const n = Number(days);
+  if (!Number.isFinite(n) || n <= 0) return false;
+  const cutoff = n * 24 * 60 * 60 * 1000;
+  let changed = false;
+  flattenTaskRefs().forEach(({ task }) => {
+    if (task.completed && task.completedAt) {
+      const age = now.getTime() - new Date(task.completedAt).getTime();
+      if (age >= cutoff && !task.archivedAt) { task.archivedAt = now.toISOString(); changed = true; }
+    } else if (task.archivedAt) {
+      task.archivedAt = null;
+      changed = true;
+    }
+    (task.series || []).forEach((s) => {
+      if (s.completed && s.completedAt) {
+        const age = now.getTime() - new Date(s.completedAt).getTime();
+        if (age >= cutoff && !s.archivedAt) { s.archivedAt = now.toISOString(); changed = true; }
+      } else if (s.archivedAt) {
+        s.archivedAt = null;
+        changed = true;
+      }
+    });
+  });
+  return changed;
+}
+
+function snoozeTask(task, mode, now = new Date()) {
+  const at = new Date(now);
+  if (mode === 'later') {
+    at.setHours(at.getHours() + 3, 0, 0, 0);
+  } else if (mode === 'tomorrow') {
+    at.setDate(at.getDate() + 1);
+    at.setHours(9, 0, 0, 0);
+  } else if (mode === 'next-week') {
+    at.setDate(at.getDate() + 7);
+    at.setHours(9, 0, 0, 0);
+  } else return;
+  task.availableAt = at.toISOString();
+}
+
+function isTaskAvailable(t, now = new Date(), currentContext = null, depMap = null) {
   if (t.waitingOn && t.waitingOn.trim()) return false;
+  if (unresolvedDependencyIds(t, depMap).length) return false;
   if (t.availableAt) {
     const at = new Date(t.availableAt);
     if (now < at) return false;
@@ -435,8 +741,10 @@ function isTaskAvailable(t, now = new Date(), currentContext = null) {
   return true;
 }
 
-function availabilityReason(t, now = new Date(), currentContext = null) {
+function availabilityReason(t, now = new Date(), currentContext = null, depMap = null) {
   if (t.waitingOn && t.waitingOn.trim()) return `Waiting: ${t.waitingOn.trim()}`;
+  const deps = dependencyNames(t, depMap);
+  if (deps.length) return `Blocked by: ${deps.join(', ')}`;
   if (t.availableAt) {
     const at = new Date(t.availableAt);
     if (now < at) return `Available ${at.toLocaleString()}`;
@@ -486,11 +794,16 @@ function buildTaskTagline(t, reason = '', opts = {}) {
   const dur = taskDurationMins(t);
   const includeSeries = opts.includeSeries !== false;
   const series = includeSeries ? seriesSummary(t) : null;
-  if (!locs.length && !dur && !reason && !series) return null;
+  const due = dueStatus(t);
+  if (!locs.length && !dur && !reason && !series && due.state === 'none') return null;
   const line = el('div', { class: 'tagline' });
   if (locs.length) line.append(el('span', { class: 'pill tag' }, `Loc: ${locs.join(', ')}`));
   if (dur) line.append(el('span', { class: 'pill tag' }, `Time: ${formatDuration(dur)}`));
   if (series) line.append(el('span', { class: 'pill tag series-pill' }, series));
+  if (due.state !== 'none') {
+    const cls = due.state === 'overdue' ? 'pill warn' : 'pill tag';
+    line.append(el('span', { class: cls }, due.label));
+  }
   if (reason) line.append(el('span', { class: 'pill warn' }, reason));
   return line;
 }
@@ -519,6 +832,22 @@ function buildAvailabilityControls(nodeId, taskId, rerender) {
   clear1.addEventListener('click', () => { dt.value = ''; updateTask(task => { task.availableAt = null; }); });
   row1.append(dt, clear1);
   avail.append(row1);
+
+  // Due date
+  const rowDue = el('div', { class: 'row' });
+  rowDue.append(el('div', { class: 'subtext' }, 'Due'));
+  const dueInput = el('input', { type: 'datetime-local' });
+  dueInput.value = toLocalInputValue(t.dueAt);
+  dueInput.addEventListener('change', () => {
+    updateTask(task => { task.dueAt = parseLocalDateTime(dueInput.value); });
+  });
+  const clearDue = el('button', { class: 'btn ghost' }, 'Clear');
+  clearDue.addEventListener('click', () => {
+    dueInput.value = '';
+    updateTask(task => { task.dueAt = null; });
+  });
+  rowDue.append(dueInput, clearDue);
+  avail.append(rowDue);
 
   // Contexts
   const row2 = el('div', { class: 'row' });
@@ -631,6 +960,82 @@ function buildAvailabilityControls(nodeId, taskId, rerender) {
   rowTime.append(timeStack, clearTime);
   avail.append(rowTime);
 
+  // Recurrence
+  const rowRecur = el('div', { class: 'row' });
+  rowRecur.append(el('div', { class: 'subtext' }, 'Repeat'));
+  const recurSel = el('select', { class: 'select-sm' });
+  [['none', 'No repeat'], ['daily', 'Daily'], ['weekly', 'Weekly'], ['monthly', 'Monthly']].forEach(([v, label]) => {
+    recurSel.append(el('option', { value: v }, label));
+  });
+  recurSel.value = t.recurrence || 'none';
+  recurSel.addEventListener('change', () => {
+    updateTask(task => {
+      task.recurrence = recurSel.value;
+      if (task.recurrence === 'none') task.nextRecurringAt = null;
+      else if (task.completed && !task.nextRecurringAt) task.nextRecurringAt = nextRecurringAt(task.recurrence);
+    });
+  });
+  const recurMeta = el('div', { class: 'subtext' }, t.nextRecurringAt ? `Next ${new Date(t.nextRecurringAt).toLocaleString()}` : '');
+  rowRecur.append(recurSel, recurMeta);
+  avail.append(rowRecur);
+
+  // Dependencies
+  const rowDeps = el('div', { class: 'row' });
+  rowDeps.append(el('div', { class: 'subtext' }, 'Blocked by'));
+  const depStack = el('div', { class: 'stack' });
+  const depChips = el('div', { class: 'chiplist' });
+  const allRefs = flattenTaskRefs().filter(r => r.task.id !== taskId);
+  const byId = new Map(allRefs.map(r => [r.task.id, r]));
+  (t.blockedBy || []).forEach((depId) => {
+    const depRef = byId.get(depId);
+    if (!depRef) return;
+    const chip = el('span', { class: 'chip' }, [`${depRef.task.text}`, el('button', {}, '✕')]);
+    chip.querySelector('button').addEventListener('click', () => {
+      updateTask(task => { task.blockedBy = (task.blockedBy || []).filter(id => id !== depId); });
+    });
+    depChips.append(chip);
+  });
+  const depAddRow = el('div', { class: 'mini-add' });
+  const depSel = el('select', { class: 'select-sm' });
+  depSel.append(el('option', { value: '' }, 'Add dependency...'));
+  allRefs.forEach((r) => {
+    const label = `${r.task.text} (${nodePath(r.node)})`;
+    depSel.append(el('option', { value: r.task.id }, label));
+  });
+  const depAdd = el('button', { class: 'btn ghost' }, 'Add');
+  depAdd.addEventListener('click', () => {
+    const depId = depSel.value;
+    if (!depId) return;
+    updateTask(task => {
+      const arr = task.blockedBy || [];
+      if (!arr.includes(depId)) arr.push(depId);
+      task.blockedBy = arr;
+    });
+    depSel.value = '';
+  });
+  depAddRow.append(depSel, depAdd);
+  depStack.append(depChips, depAddRow);
+  rowDeps.append(depStack, el('div'));
+  avail.append(rowDeps);
+
+  // Snooze
+  const rowSnooze = el('div', { class: 'row' });
+  rowSnooze.append(el('div', { class: 'subtext' }, 'Snooze'));
+  const snoozeRow = el('div', { class: 'chiplist' });
+  const mkSnoozeBtn = (label, mode) => {
+    const btn = el('button', { class: 'chip toggle' }, label);
+    btn.addEventListener('click', () => {
+      updateTask(task => { snoozeTask(task, mode); });
+      showToast(`Snoozed to ${label.toLowerCase()}`);
+    });
+    return btn;
+  };
+  snoozeRow.append(mkSnoozeBtn('Later today', 'later'), mkSnoozeBtn('Tomorrow', 'tomorrow'), mkSnoozeBtn('Next week', 'next-week'));
+  const clearSnooze = el('button', { class: 'btn ghost' }, 'Clear');
+  clearSnooze.addEventListener('click', () => { updateTask(task => { task.availableAt = null; }); });
+  rowSnooze.append(snoozeRow, clearSnooze);
+  avail.append(rowSnooze);
+
   // Series
   const rowSeries = el('div', { class: 'row' });
   rowSeries.append(el('div', { class: 'subtext' }, 'Series'));
@@ -685,13 +1090,13 @@ function buildAvailabilityControls(nodeId, taskId, rerender) {
       items.forEach((s) => {
         const row = el('div', { class: 'series-item' + (s.completed ? ' completed' : '') });
         const cb = el('input', { type: 'checkbox' });
-        cb.checked = !!s.completed;
-        cb.addEventListener('change', () => {
-          updateTask(task => {
-            const sub = (task.series || []).find(x => x.id === s.id);
-            if (sub) sub.completed = cb.checked;
-          });
+      cb.checked = !!s.completed;
+      cb.addEventListener('change', () => {
+        updateTask(task => {
+          const sub = (task.series || []).find(x => x.id === s.id);
+          if (sub) setSubtaskCompleted(task, sub, cb.checked);
         });
+      });
         const rankInput = el('input', { type: 'number', min: '1', class: 'series-rank' });
         rankInput.value = String(Math.max(1, Number(s.rank) || 1));
         rankInput.addEventListener('change', () => {
@@ -787,34 +1192,37 @@ function buildAvailabilityControls(nodeId, taskId, rerender) {
 function renderThreads() {
   const root = $('#threads-root');
   root.innerHTML = '';
+  const depMap = allTaskRefMap();
   if (!store.data.threads.length) {
     root.append(el('div', { class: 'empty' }, 'No threads yet. Add one to begin.'));
+    refreshQuickCaptureTargets();
     return;
   }
   for (const node of store.data.threads) {
-    root.append(renderNode(node));
+    root.append(renderNode(node, depMap));
   }
+  refreshQuickCaptureTargets();
 }
 
-function renderNode(node) {
+function renderNode(node, depMap = null) {
   const container = el('div', { class: 'node', 'data-id': node.id });
   const header = el('div', { class: 'node-header' });
   const titleWrap = el('div', { class: 'node-title' });
   const caret = el('button', { class: 'btn ghost', title: 'Collapse/Expand' }, node.collapsed ? '▸' : '▾');
   caret.addEventListener('click', () => { node.collapsed = !node.collapsed; store.save(); renderThreads(); });
   const colorDot = el('span', { style: `display:inline-block;width:10px;height:10px;border-radius:999px;background:${node.color || '#666'};margin-right:6px;vertical-align:middle;` });
-  titleWrap.append(caret, colorDot, document.createTextNode(node.name || 'Untitled'));
-  const actions = el('div', { class: 'node-actions' });
-
-  const btnRename = el('button', { class: 'btn ghost' }, 'Rename');
-  btnRename.addEventListener('click', () => {
-    const name = confirmName('Rename thread/subthread', node.name);
-    if (!name) return;
-    node.name = name;
+  const titleInput = el('input', { type: 'text', class: 'task-title-input' });
+  titleInput.value = node.name || 'Untitled';
+  titleInput.addEventListener('change', () => {
+    const v = titleInput.value.trim();
+    if (!v) { titleInput.value = node.name || 'Untitled'; return; }
+    node.name = v;
     store.save();
     recomputeIndexes();
     renderThreads();
   });
+  titleWrap.append(caret, colorDot, titleInput);
+  const actions = el('div', { class: 'node-actions' });
 
   const btnAddChild = el('button', { class: 'btn ghost' }, '+ Subthread');
   btnAddChild.addEventListener('click', () => {
@@ -839,7 +1247,7 @@ function renderNode(node) {
   const en = el('input', { type: 'checkbox' }); en.checked = node.enabled !== false; en.addEventListener('change', ()=>{ node.enabled = en.checked; store.save(); renderThreads(); });
   enabledToggle.append(en, document.createTextNode(' Enabled'));
 
-  actions.append(moveUp, moveDown, btnRename, btnAddChild, btnQuestions, btnTasks, enabledToggle);
+  actions.append(moveUp, moveDown, btnAddChild, btnQuestions, btnTasks, enabledToggle);
   header.append(titleWrap, actions);
   container.append(header);
 
@@ -857,19 +1265,16 @@ function renderNode(node) {
   node.questions.forEach((q) => {
     const row = el('div', { class: 'inline-item' });
     const top = el('div', { class: 'kv' });
-    const label = el('div', {}, q.text);
+    const label = el('input', { type: 'text', class: 'task-title-input' });
+    label.value = q.text;
+    label.addEventListener('change', () => { q.text = label.value.trim() || q.text; store.save(); });
     const actions = el('div');
-    const edit = el('button', { class: 'btn ghost' }, 'Edit');
-    edit.addEventListener('click', () => {
-      const val = confirmName('Edit question', q.text);
-      if (val != null && val.trim()) { q.text = val.trim(); store.save(); renderThreads(); }
-    });
     const del = el('button', { class: 'btn ghost' }, 'Remove');
     del.addEventListener('click', () => {
       node.questions = node.questions.filter(x => x.id !== q.id);
       store.save(); renderThreads();
     });
-    actions.append(edit, del);
+    actions.append(del);
     top.append(label, actions);
     row.append(top);
     qList.append(row);
@@ -890,21 +1295,19 @@ function renderNode(node) {
   const tSection = el('div', { class: 'story-section' });
   tSection.append(el('div', { class: 'subtext' }, 'Tasks'));
   const tList = el('div', { class: 'inline-list' });
+  const now = new Date();
   if (!node.tasks.length) tList.append(el('div', { class: 'empty' }, 'No tasks yet.'));
   node.tasks.forEach((t) => {
     const row = el('div', { class: 'inline-item' });
     const top = el('div', { class: 'kv' });
-    const label = el('div', {}, t.text);
+    const label = el('input', { type: 'text', class: 'task-title-input' });
+    label.value = t.text;
+    label.addEventListener('change', () => { t.text = label.value.trim() || t.text; store.saveNow(); });
     const actions = el('div', { class: 'meta' });
     const pri = el('select', { class: 'priority-select', title: 'Priority' });
     for (let i = 1; i <= 5; i++) pri.append(el('option', { value: String(i) }, i));
     pri.value = String(t.priority || 3);
     pri.addEventListener('change', () => { t.priority = Number(pri.value); store.saveNow(); renderThreads(); });
-    const edit = el('button', { class: 'btn ghost' }, 'Edit');
-    edit.addEventListener('click', () => {
-      const val = confirmName('Edit task', t.text);
-      if (val != null && val.trim()) { t.text = val.trim(); store.save(); renderThreads(); }
-    });
     const del = el('button', { class: 'btn ghost' }, 'Remove');
     del.addEventListener('click', () => {
       node.tasks = node.tasks.filter(x => x.id !== t.id);
@@ -914,11 +1317,11 @@ function renderNode(node) {
     avail.hidden = true;
     const availBtn = el('button', { class: 'btn ghost' }, 'Tags');
     availBtn.addEventListener('click', () => { avail.hidden = !avail.hidden; });
-    actions.append(pri, availBtn, edit, del);
+    actions.append(pri, availBtn, del);
     top.append(label, actions);
     // status tint
     if (t.completed) row.classList.add('status-completed');
-    else if (isTaskAvailable(t)) row.classList.add('status-available');
+    else if (isTaskAvailable(t, now, null, depMap)) row.classList.add('status-available');
     else row.classList.add('status-blocked');
     row.append(top);
     // Availability controls (Prepare, hidden by default)
@@ -940,7 +1343,7 @@ function renderNode(node) {
   if (node.children.length) {
     const kids = el('div', { class: 'node-children' });
     kids.hidden = !!node.collapsed;
-    for (const child of node.children) kids.append(renderNode(child));
+    for (const child of node.children) kids.append(renderNode(child, depMap));
     container.append(kids);
   }
   return container;
@@ -1060,6 +1463,8 @@ function restoreReviewProgressIfAny() {
     reviewState = { ids, idx };
     // ensure review view visible
     switchView('review');
+    const summary = $('#review-summary');
+    if (summary) summary.hidden = true;
     $('#review-empty').hidden = true;
     $('#review-stage').hidden = false;
     $('#btn-start-review').hidden = true;
@@ -1074,6 +1479,8 @@ function restoreReviewProgressIfAny() {
 function startReview() {
   // ensure latest structure is indexed
   recomputeIndexes();
+  const summary = $('#review-summary');
+  if (summary) summary.hidden = true;
   const nodes = subthreadsForReview();
   reviewState = { ids: nodes.map(n => n.id), idx: 0 };
   if (!nodes.length) {
@@ -1153,25 +1560,22 @@ function renderStoryCard() {
     const wrap = el('div', { class: 'inline-item' });
     // Top row: label + actions
     const top = el('div', { class: 'kv' });
-    const label = el('div', {}, q.text);
-    const actions = el('div');
-    const editBtn = el('button', { class: 'btn ghost' }, 'Edit');
-    editBtn.addEventListener('click', () => {
-      const val = confirmName('Edit question', q.text);
-      if (val != null && val.trim()) {
-        const live = findNodeById(store.data.threads, n.id);
-        const qi = live.questions.findIndex(x => x.id === q.id);
-        if (qi >= 0) { live.questions[qi].text = val.trim(); }
-        store.saveNow(); renderStoryCard();
-      }
+    const label = el('input', { type: 'text', class: 'task-title-input' });
+    label.value = q.text;
+    label.addEventListener('change', () => {
+      const live = findNodeById(store.data.threads, n.id);
+      const qi = live.questions.findIndex(x => x.id === q.id);
+      if (qi >= 0) live.questions[qi].text = label.value.trim() || live.questions[qi].text;
+      store.saveNow();
     });
+    const actions = el('div');
     const delBtn = el('button', { class: 'btn ghost' }, 'Remove');
     delBtn.addEventListener('click', () => {
       const live = findNodeById(store.data.threads, n.id);
       live.questions = live.questions.filter(x => x.id !== q.id);
       store.saveNow(); renderStoryCard(); renderProgress();
     });
-    actions.append(editBtn, delBtn);
+    actions.append(delBtn);
     top.append(label, actions);
     wrap.append(top);
     qSection.append(wrap);
@@ -1193,6 +1597,8 @@ function renderStoryCard() {
   const tSection = el('div', { class: 'story-section' });
   tSection.append(el('div', { class: 'subtext' }, `${root?.name || 'Thread'} — Tasks`));
   const tasksEl = el('div', { class: 'tasks' });
+  const depMap = allTaskRefMap();
+  const now = new Date();
   if (!n.tasks.length) tasksEl.append(el('div', { class: 'empty' }, 'No tasks yet.'));
   for (const t of n.tasks) {
     const stats = seriesStats(t);
@@ -1209,13 +1615,22 @@ function renderStoryCard() {
       cb.addEventListener('change', () => {
         const live = findNodeById(store.data.threads, n.id);
         const ti = live.tasks.findIndex(x => x.id === t.id);
-        if (ti >= 0) { live.tasks[ti].completed = cb.checked; }
+        if (ti >= 0) setTaskCompleted(live.tasks[ti], cb.checked);
         store.saveNow();
         item.classList.toggle('completed', cb.checked);
       });
     }
     const main = el('div');
-    main.append(el('div', {}, t.text));
+    const titleInput = el('input', { type: 'text', class: 'task-title-input' });
+    titleInput.value = t.text;
+    titleInput.addEventListener('change', () => {
+      const live = findNodeById(store.data.threads, n.id);
+      const ti = live.tasks.findIndex(x => x.id === t.id);
+      if (ti >= 0) live.tasks[ti].text = titleInput.value.trim() || live.tasks[ti].text;
+      store.saveNow();
+      renderThreads();
+    });
+    main.append(titleInput);
     const btns = el('div', { class: 'meta' });
     const pri = el('select', { class: 'priority-select', title: 'Priority' });
     for (let i = 1; i <= 5; i++) pri.append(el('option', { value: String(i) }, i));
@@ -1225,16 +1640,6 @@ function renderStoryCard() {
       const ti = live.tasks.findIndex(x => x.id === t.id);
       if (ti >= 0) { live.tasks[ti].priority = Number(pri.value); }
       store.saveNow(); renderStoryCard(); renderProgress();
-    });
-    const editBtn = el('button', { class: 'btn ghost' }, 'Edit');
-    editBtn.addEventListener('click', () => {
-      const val = confirmName('Edit task', t.text);
-      if (val != null && val.trim()) {
-        const live = findNodeById(store.data.threads, n.id);
-        const ti = live.tasks.findIndex(x => x.id === t.id);
-        if (ti >= 0) { live.tasks[ti].text = val.trim(); }
-        store.saveNow(); renderStoryCard();
-      }
     });
     const delBtn = el('button', { class: 'btn ghost' }, 'Remove');
     delBtn.addEventListener('click', () => {
@@ -1246,8 +1651,8 @@ function renderStoryCard() {
     avail.hidden = true;
     const availBtn = el('button', { class: 'btn ghost' }, 'Tags');
     availBtn.addEventListener('click', () => { avail.hidden = !avail.hidden; });
-    btns.append(pri, availBtn, editBtn, delBtn);
-    const reason = availabilityReason(t);
+    btns.append(pri, availBtn, delBtn);
+    const reason = availabilityReason(t, now, null, depMap);
     const tagline = buildTaskTagline(t, reason);
     if (tagline) main.append(tagline);
     item.append(cb, main, btns);
@@ -1255,7 +1660,7 @@ function renderStoryCard() {
     item.append(avail);
     // Status tint classes
     if (done) item.classList.add('status-completed');
-    else if (isTaskAvailable(t)) item.classList.add('status-available');
+    else if (isTaskAvailable(t, now, null, depMap)) item.classList.add('status-available');
     else item.classList.add('status-blocked');
     tasksEl.append(item);
   }
@@ -1274,15 +1679,78 @@ function renderStoryCard() {
   card.append(header, qSection, tSection, tasksEl, addT);
 }
 
+function buildCarryForwardRecommendations(limit = 6) {
+  const now = new Date();
+  const depMap = allTaskRefMap();
+  const refs = flattenTaskEntries().filter((ref) => {
+    if (ref.kind === 'subtask') return !ref.subtask.completed && isTaskAvailable(ref.task, now, null, depMap);
+    return !ref.task.completed && isTaskAvailable(ref.task, now, null, depMap);
+  });
+  refs.sort((a, b) => {
+    const pa = a.task.priority || 3;
+    const pb = b.task.priority || 3;
+    if (pa !== pb) return pa - pb;
+    const da = a.task.dueAt ? new Date(a.task.dueAt).getTime() : Infinity;
+    const db = b.task.dueAt ? new Date(b.task.dueAt).getTime() : Infinity;
+    return da - db;
+  });
+  return refs.slice(0, limit);
+}
+
+function renderReviewSummary() {
+  const stage = $('#review-stage');
+  const empty = $('#review-empty');
+  const summary = $('#review-summary');
+  if (!summary || !empty || !stage) return;
+  stage.hidden = true;
+  empty.hidden = true;
+  summary.hidden = false;
+  const refs = flattenTaskRefs();
+  const now = new Date();
+  const depMap = allTaskRefMap();
+  const total = refs.length;
+  const completed = refs.filter(r => r.task.completed).length;
+  const blocked = refs.filter(r => !isTaskAvailable(r.task, now, null, depMap)).length;
+  const dueSoon = refs.filter((r) => {
+    const ds = dueStatus(r.task);
+    return ds.state === 'overdue' || ds.state === 'soon';
+  }).length;
+  const recs = buildCarryForwardRecommendations(6);
+  summary.innerHTML = '';
+  const header = el('div', { class: 'summary-header' });
+  header.append(el('h2', {}, 'Review Summary'));
+  header.append(el('div', { class: 'subtext' }, `${completed}/${total} tasks completed`));
+  const metrics = el('div', { class: 'summary-metrics' });
+  metrics.append(el('div', { class: 'summary-metric' }, [`${blocked}`, el('span', {}, 'Blocked')]));
+  metrics.append(el('div', { class: 'summary-metric' }, [`${dueSoon}`, el('span', {}, 'Urgent')]));
+  const list = el('div', { class: 'summary-list' });
+  if (!recs.length) list.append(el('div', { class: 'empty' }, 'No carry-forward tasks. Review is clear.'));
+  recs.forEach((ref) => {
+    const title = ref.kind === 'subtask' ? ref.subtask.text : ref.task.text;
+    const parent = ref.kind === 'subtask' ? ` (${ref.task.text})` : '';
+    const row = el('div', { class: 'summary-item' });
+    row.append(el('strong', {}, title + parent));
+    row.append(el('div', { class: 'subtext' }, `${nodePath(ref.node)} • Priority ${ref.task.priority || 3}`));
+    list.append(row);
+  });
+  const footer = el('div', { class: 'summary-actions' });
+  const openTasks = el('button', { class: 'btn primary' }, 'Open Carry-Forward Tasks');
+  openTasks.addEventListener('click', () => {
+    switchView('tasks');
+    renderTasksPane();
+  });
+  const rerun = el('button', { class: 'btn ghost' }, 'Run Review Again');
+  rerun.addEventListener('click', startReview);
+  footer.append(openTasks, rerun);
+  summary.append(header, metrics, list, footer);
+}
+
 function nextStory() {
   if (reviewState.idx < reviewState.ids.length - 1) {
     reviewState.idx += 1; renderProgress(); renderStoryCard(); saveReviewProgress();
   } else {
     // End of review: hide stage, show start button and a completion message
-    $('#review-stage').hidden = true;
-    const msg = $('#review-empty');
-    msg.textContent = 'Review complete. Press Start Review to run again.';
-    msg.hidden = false;
+    renderReviewSummary();
     $('#btn-start-review').hidden = false;
     clearReviewProgress();
   }
@@ -1304,6 +1772,8 @@ function closeModal() { $('#modal').hidden = true; }
 // App wiring
 // ------------------------------
 async function init() {
+  loadUiPrefs();
+  loadTasksViewState();
   // Attempt Firebase first; fallback to localStorage
   const usedFirebase = await store.tryFirebase();
   if (!usedFirebase) store.load();
@@ -1312,6 +1782,7 @@ async function init() {
   (store.data.pantry?.categories || []).forEach(normalizeCategory);
   autoAssignThreadColors();
   recomputeIndexes();
+  resetHistoryBaseline();
   // Seed example if empty
   if (store.mode === 'local' && !store.data.threads.length) {
     const fitness = createNode('Fitness');
@@ -1329,6 +1800,7 @@ async function init() {
     autoAssignThreadColors();
     store.save();
     recomputeIndexes();
+    resetHistoryBaseline();
   }
 
   // Tabs
@@ -1336,6 +1808,48 @@ async function init() {
   $('#tab-review').addEventListener('click', () => switchView('review'));
   $('#tab-tasks').addEventListener('click', () => switchView('tasks'));
   $('#tab-pantry').addEventListener('click', () => switchView('pantry'));
+  const quickCaptureForm = $('#quick-capture-form');
+  const quickCaptureInput = $('#quick-capture-input');
+  const quickCaptureTarget = $('#quick-capture-target');
+  quickCaptureForm?.addEventListener('submit', (e) => {
+    e.preventDefault();
+    const text = quickCaptureInput?.value || '';
+    quickCaptureTask(text, quickCaptureTarget?.value || null);
+    if (quickCaptureInput) quickCaptureInput.value = '';
+  });
+  quickCaptureTarget?.addEventListener('change', () => {
+    uiPrefs.captureNodeId = quickCaptureTarget.value || null;
+    persistUiPrefs();
+  });
+  const globalSearch = $('#global-search');
+  globalSearch?.addEventListener('input', () => renderSearchResults(globalSearch.value));
+  globalSearch?.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape') {
+      globalSearch.value = '';
+      renderSearchResults('');
+      globalSearch.blur();
+    }
+  });
+  document.addEventListener('click', (e) => {
+    const bar = $('.utility-bar');
+    if (!bar || bar.contains(e.target)) return;
+    if (globalSearch) globalSearch.value = '';
+    renderSearchResults('');
+  });
+  $('#btn-undo')?.addEventListener('click', undoChange);
+  $('#btn-redo')?.addEventListener('click', redoChange);
+  document.addEventListener('keydown', (e) => {
+    const target = e.target;
+    const isTypingField = !!target && (
+      target.matches?.('input[type="text"], input[type="search"], input[type="number"], input[type="datetime-local"], textarea, select') ||
+      target.isContentEditable
+    );
+    if (isTypingField) return;
+    const z = e.key.toLowerCase() === 'z';
+    const meta = e.metaKey || e.ctrlKey;
+    if (meta && z && !e.shiftKey) { e.preventDefault(); undoChange(); }
+    if (meta && z && e.shiftKey) { e.preventDefault(); redoChange(); }
+  });
 
   // Prepare actions
   $('#btn-add-thread').addEventListener('click', () => {
@@ -1362,6 +1876,7 @@ async function init() {
 
   renderThreads();
   onReviewVisibility();
+  switchView(uiPrefs.lastView || 'prepare');
   // Pre-render tasks pane if selected later
   // No-op here; render on switch
   // Restore review if previously active (main), else try pantry review
@@ -1395,11 +1910,15 @@ function switchView(name) {
   if (isReview) onReviewVisibility();
   if (isTasks) renderTasksPane();
   if (isPantry) renderPantryActiveView();
+  uiPrefs.lastView = name;
+  persistUiPrefs();
 }
 
 function onReviewVisibility() {
   const nodes = subthreadsForReview();
   const has = nodes.length > 0;
+  const summary = $('#review-summary');
+  if (summary) summary.hidden = true;
   // Show empty only when there are no subthreads; stage remains hidden until start
   const empty = $('#review-empty');
   if (has) {
@@ -1469,6 +1988,11 @@ function renderPantryActiveView() {
   const ptabPrep = $('#ptab-prepare');
   const ptabRev = $('#ptab-review');
   const ptabShop = $('#ptab-shopping');
+  if (![ptabPrep, ptabRev, ptabShop].some(b => b.classList.contains('active'))) {
+    if (uiPrefs.pantryTab === 'review') ptabRev.classList.add('active');
+    else if (uiPrefs.pantryTab === 'shopping') ptabShop.classList.add('active');
+    else ptabPrep.classList.add('active');
+  }
   // attach listeners once
   if (!ptabPrep._wired) {
     ptabPrep._wired = true;
@@ -1484,6 +2008,10 @@ function renderPantryActiveView() {
   const vRev = $('#pantry-review');
   const vShop = $('#pantry-shopping');
   const active = [ptabPrep, ptabRev, ptabShop].find(b => b.classList.contains('active')) || ptabPrep;
+  if (active === ptabPrep) uiPrefs.pantryTab = 'prepare';
+  if (active === ptabRev) uiPrefs.pantryTab = 'review';
+  if (active === ptabShop) uiPrefs.pantryTab = 'shopping';
+  persistUiPrefs();
   vPrep.hidden = active !== ptabPrep; vPrep.classList.toggle('active', active === ptabPrep);
   vRev.hidden = active !== ptabRev; vRev.classList.toggle('active', active === ptabRev);
   vShop.hidden = active !== ptabShop; vShop.classList.toggle('active', active === ptabShop);
@@ -1508,10 +2036,17 @@ function renderPantryCategory(cat) {
   const title = el('div', { class: 'node-title' });
   const caret = el('button', { class: 'btn ghost', title: 'Collapse/Expand' }, cat.collapsed ? '▸' : '▾');
   caret.addEventListener('click', ()=>{ cat.collapsed = !cat.collapsed; store.saveNow(); renderPantryPrepare(); });
-  title.append(caret, document.createTextNode(cat.name));
+  const titleInput = el('input', { type: 'text', class: 'task-title-input' });
+  titleInput.value = cat.name;
+  titleInput.addEventListener('change', () => {
+    const v = titleInput.value.trim();
+    if (!v) { titleInput.value = cat.name; return; }
+    cat.name = v;
+    store.saveNow();
+    renderPantryPrepare();
+  });
+  title.append(caret, titleInput);
   const actions = el('div', { class: 'node-actions' });
-  const rename = el('button', { class: 'btn ghost' }, 'Rename');
-  rename.addEventListener('click', () => { const n = confirmName('Rename category', cat.name); if (!n) return; cat.name = n; store.saveNow(); renderPantryPrepare(); });
   const addSub = el('button', { class: 'btn ghost' }, '+ Subcategory');
   const moveUp = el('button', { class: 'btn ghost', title: 'Move up' }, '↑');
   moveUp.addEventListener('click', ()=>{ moveCategory(cat.id, -1); });
@@ -1521,7 +2056,7 @@ function renderPantryCategory(cat) {
   const enabledToggle = el('label', { class: 'subtext' });
   const en = el('input', { type: 'checkbox' }); en.checked = cat.enabled !== false; en.addEventListener('change', ()=>{ cat.enabled = en.checked; store.saveNow(); renderPantryPrepare(); });
   enabledToggle.append(en, document.createTextNode(' Enabled'));
-  actions.append(moveUp, moveDown, rename, addSub, enabledToggle);
+  actions.append(moveUp, moveDown, addSub, enabledToggle);
   header.append(title, actions);
   container.append(header);
   const meta = el('div', { class: 'subtext' }, `${(cat.children||[]).length} sub, ${(cat.items||[]).length} items`);
@@ -1533,17 +2068,20 @@ function renderPantryCategory(cat) {
   (cat.items||[]).forEach(item => {
     const row = el('div', { class: 'inline-item' });
     const top = el('div', { class: 'kv' });
-    const label = el('div', {}, `${item.name}`);
+    const label = el('input', { type: 'text', class: 'task-title-input' });
+    label.value = item.name;
+    label.addEventListener('change', () => {
+      item.name = label.value.trim() || item.name;
+      store.saveNow();
+    });
     const actions = el('div', { class: 'meta' });
     const status = el('select', { class: 'priority-select' });
     [['to_buy','To buy'],['stocked','Stocked'],['not_needed','Not needed']].forEach(([v,t])=> status.append(el('option',{value:v},t)));
     status.value = item.status;
     status.addEventListener('change', ()=>{ item.status = status.value; store.saveNow(); renderPantryPrepare(); });
-    const edit = el('button', { class: 'btn ghost' }, 'Edit');
-    edit.addEventListener('click', ()=>{ const n = confirmName('Edit item name', item.name); if (n!=null && n.trim()) { item.name = n.trim(); store.saveNow(); renderPantryPrepare(); }});
     const del = el('button', { class: 'btn ghost' }, 'Remove');
     del.addEventListener('click', ()=>{ cat.items = cat.items.filter(x=>x.id!==item.id); store.saveNow(); renderPantryPrepare(); });
-    actions.append(status, edit, del);
+    actions.append(status, del);
     top.append(label, actions);
     // status tint
     row.classList.add(`pantry-${item.status}`);
@@ -1624,7 +2162,156 @@ function wireCopyShopping(){
     }
   };
 }
-let tasksViewState = { currentContext: 'Any', locationTags: [], durationMax: null, showBlocked: false };
+let tasksViewState = {
+  currentContext: 'Any',
+  locationTags: [],
+  durationMax: null,
+  showBlocked: false,
+  searchText: '',
+  archiveAfterDays: 7,
+  showArchived: false,
+  selectionMode: false,
+};
+let selectedTaskKeys = new Set();
+
+function saveTasksViewState() {
+  const payload = {
+    currentContext: tasksViewState.currentContext,
+    locationTags: tasksViewState.locationTags,
+    durationMax: tasksViewState.durationMax,
+    showBlocked: tasksViewState.showBlocked,
+    searchText: tasksViewState.searchText,
+    archiveAfterDays: tasksViewState.archiveAfterDays,
+    showArchived: tasksViewState.showArchived,
+  };
+  try { localStorage.setItem(TASKS_VIEW_STATE_KEY, JSON.stringify(payload)); } catch {}
+}
+
+function loadTasksViewState() {
+  const saved = safeJsonParse(localStorage.getItem(TASKS_VIEW_STATE_KEY), null);
+  if (!saved || typeof saved !== 'object') return;
+  tasksViewState.currentContext = saved.currentContext || 'Any';
+  tasksViewState.locationTags = uniqTags(saved.locationTags || []);
+  tasksViewState.durationMax = normalizeDurationValue(saved.durationMax);
+  tasksViewState.showBlocked = !!saved.showBlocked;
+  tasksViewState.searchText = (saved.searchText || '').trim();
+  tasksViewState.archiveAfterDays = Number(saved.archiveAfterDays) > 0 ? Number(saved.archiveAfterDays) : 7;
+  tasksViewState.showArchived = !!saved.showArchived;
+}
+
+function entryKey(ref) {
+  if (ref.kind === 'subtask') return `subtask:${ref.task.id}:${ref.subtask.id}`;
+  return `task:${ref.task.id}`;
+}
+
+function selectionEntries() {
+  const map = new Map();
+  flattenTaskEntries().forEach(ref => map.set(entryKey(ref), ref));
+  return map;
+}
+
+function ensureInboxNode() {
+  let inbox = (store.data.threads || []).find(n => (n.name || '').toLowerCase() === 'inbox');
+  if (!inbox) {
+    inbox = createNode('Inbox');
+    inbox.color = THREAD_PALETTE[hashName('Inbox') % THREAD_PALETTE.length];
+    store.data.threads.unshift(inbox);
+    autoAssignThreadColors();
+    recomputeIndexes();
+    renderThreads();
+  }
+  return inbox;
+}
+
+function quickCaptureTask(text, nodeId = null) {
+  const raw = (text || '').trim();
+  if (!raw) return;
+  let node = nodeId ? findNodeById(store.data.threads, nodeId) : null;
+  if (!node) node = ensureInboxNode();
+  node.tasks.push(createTask(raw));
+  uiPrefs.captureNodeId = node.id;
+  persistUiPrefs();
+  store.saveNow();
+  recomputeIndexes();
+  renderThreads();
+  if (!$('#view-tasks').hidden) renderTasksPane();
+  if (!$('#review-stage').hidden) { renderProgress(); renderStoryCard(); }
+  showToast(`Captured to ${node.name}`);
+}
+
+function refreshQuickCaptureTargets() {
+  const sel = $('#quick-capture-target');
+  if (!sel) return;
+  const nodes = flattenNodes(store.data.threads).filter(isNodePathEnabled);
+  sel.innerHTML = '';
+  nodes.forEach((n) => {
+    sel.append(el('option', { value: n.id }, nodePath(n)));
+  });
+  if (!nodes.length) {
+    const inbox = ensureInboxNode();
+    sel.append(el('option', { value: inbox.id }, inbox.name));
+  }
+  const existing = nodes.find(n => n.id === uiPrefs.captureNodeId) || nodes[0];
+  if (existing) sel.value = existing.id;
+}
+
+function searchIndex(query) {
+  const q = (query || '').trim().toLowerCase();
+  if (!q) return [];
+  const out = [];
+  const nodes = flattenNodes(store.data.threads || []);
+  nodes.forEach((n) => {
+    const path = nodePath(n);
+    if ((n.name || '').toLowerCase().includes(q) || path.toLowerCase().includes(q)) {
+      out.push({ kind: 'thread', id: n.id, title: n.name, meta: path });
+    }
+    (n.questions || []).forEach((qu) => {
+      if ((qu.text || '').toLowerCase().includes(q)) out.push({ kind: 'question', id: n.id, title: qu.text, meta: path });
+    });
+    (n.tasks || []).forEach((t) => {
+      const hay = [t.text, path, (t.contexts || []).join(' '), taskLocations(t).join(' ')].join(' ').toLowerCase();
+      if (hay.includes(q)) out.push({ kind: 'task', id: t.id, nodeId: n.id, title: t.text, meta: path });
+      (t.series || []).forEach((s) => {
+        const shay = `${s.text} ${t.text} ${path}`.toLowerCase();
+        if (shay.includes(q)) out.push({ kind: 'subtask', id: s.id, taskId: t.id, nodeId: n.id, title: s.text, meta: `${path} • ${t.text}` });
+      });
+    });
+  });
+  return out.slice(0, 40);
+}
+
+function renderSearchResults(query) {
+  const box = $('#search-results');
+  if (!box) return;
+  const q = (query || '').trim();
+  if (!q) { box.hidden = true; box.innerHTML = ''; return; }
+  const results = searchIndex(q);
+  box.innerHTML = '';
+  if (!results.length) {
+    box.append(el('div', { class: 'search-empty' }, 'No matches'));
+    box.hidden = false;
+    return;
+  }
+  results.forEach((r) => {
+    const btn = el('button', { class: 'search-item', type: 'button' });
+    btn.append(el('span', { class: 'search-kind' }, r.kind), el('strong', {}, r.title), el('span', { class: 'search-meta' }, r.meta));
+    btn.addEventListener('click', () => {
+      if (r.kind === 'thread' || r.kind === 'question') {
+        switchView('prepare');
+        const row = document.querySelector(`.node[data-id="${r.id}"]`);
+        row?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      } else {
+        switchView('tasks');
+        tasksViewState.searchText = r.title;
+        saveTasksViewState();
+        renderTasksPane();
+      }
+      box.hidden = true;
+    });
+    box.append(btn);
+  });
+  box.hidden = false;
+}
 
 function allContexts() {
   const set = new Set();
@@ -1655,6 +2342,11 @@ function renderTasksPane() {
   const root = $('#tasks-root');
   if (!root) return;
   root.innerHTML = '';
+  const now = new Date();
+  const changedRecurring = runRecurringTasks(now);
+  const changedArchive = applyArchivingRules(tasksViewState.archiveAfterDays, now);
+  if (changedRecurring || changedArchive) store.saveNow();
+  const depMap = allTaskRefMap();
 
   // Controls
   const controls = $('#tasks-controls');
@@ -1666,6 +2358,17 @@ function renderTasksPane() {
       group.append(contentEl);
       return group;
     };
+    const searchRow = el('div', { class: 'filter-row' });
+    const searchInput = el('input', { type: 'search', placeholder: 'Search within tasks...' });
+    searchInput.value = tasksViewState.searchText || '';
+    searchInput.addEventListener('input', () => {
+      tasksViewState.searchText = searchInput.value;
+      saveTasksViewState();
+      renderTasksPane();
+    });
+    searchRow.append(searchInput);
+    controls.append(buildGroup('Search', searchRow));
+
     const ctxs = allContexts();
     if (ctxs.length) {
       const ctxRow = el('div', { class: 'filter-row' });
@@ -1673,7 +2376,11 @@ function renderTasksPane() {
       sel.append(el('option', { value: 'Any' }, 'Any'));
       for (const c of ctxs) sel.append(el('option', { value: c }, c));
       sel.value = tasksViewState.currentContext || 'Any';
-      sel.addEventListener('change', () => { tasksViewState.currentContext = sel.value; renderTasksPane(); });
+      sel.addEventListener('change', () => {
+        tasksViewState.currentContext = sel.value;
+        saveTasksViewState();
+        renderTasksPane();
+      });
       ctxRow.append(sel);
       controls.append(buildGroup('Context', ctxRow));
     }
@@ -1682,7 +2389,11 @@ function renderTasksPane() {
     const activeLocs = uniqTags(tasksViewState.locationTags || []);
     const locSet = new Set(activeLocs.map(l => l.toLowerCase()));
     const locAny = el('button', { class: `chip toggle${activeLocs.length ? '' : ' active'}` }, 'Any');
-    locAny.addEventListener('click', () => { tasksViewState.locationTags = []; renderTasksPane(); });
+    locAny.addEventListener('click', () => {
+      tasksViewState.locationTags = [];
+      saveTasksViewState();
+      renderTasksPane();
+    });
     locRow.append(locAny);
     for (const loc of allLocations()) {
       const active = locSet.has(loc.toLowerCase());
@@ -1693,6 +2404,7 @@ function renderTasksPane() {
         if (idx >= 0) next.splice(idx, 1);
         else next.push(loc);
         tasksViewState.locationTags = next;
+        saveTasksViewState();
         renderTasksPane();
       });
       locRow.append(btn);
@@ -1702,13 +2414,18 @@ function renderTasksPane() {
     const timeRow = el('div', { class: 'filter-row' });
     const currentMax = normalizeDurationValue(tasksViewState.durationMax);
     const timeAny = el('button', { class: `chip toggle${currentMax ? '' : ' active'}` }, 'Any');
-    timeAny.addEventListener('click', () => { tasksViewState.durationMax = null; renderTasksPane(); });
+    timeAny.addEventListener('click', () => {
+      tasksViewState.durationMax = null;
+      saveTasksViewState();
+      renderTasksPane();
+    });
     timeRow.append(timeAny);
     for (const mins of allDurations()) {
       const active = currentMax === mins;
       const btn = el('button', { class: `chip toggle${active ? ' active' : ''}` }, formatDuration(mins) || `${mins}m`);
       btn.addEventListener('click', () => {
         tasksViewState.durationMax = active ? null : mins;
+        saveTasksViewState();
         renderTasksPane();
       });
       timeRow.append(btn);
@@ -1719,16 +2436,114 @@ function renderTasksPane() {
     const showLbl = el('label', { class: 'filter-toggle' });
     const showCb = el('input', { type: 'checkbox' });
     showCb.checked = !!tasksViewState.showBlocked;
-    showCb.addEventListener('change', () => { tasksViewState.showBlocked = showCb.checked; renderTasksPane(); });
+    showCb.addEventListener('change', () => {
+      tasksViewState.showBlocked = showCb.checked;
+      saveTasksViewState();
+      renderTasksPane();
+    });
     showLbl.append(showCb, document.createTextNode(' Show blocked'));
     optRow.append(showLbl);
+    const showArchLbl = el('label', { class: 'filter-toggle' });
+    const showArch = el('input', { type: 'checkbox' });
+    showArch.checked = !!tasksViewState.showArchived;
+    showArch.addEventListener('change', () => {
+      tasksViewState.showArchived = showArch.checked;
+      saveTasksViewState();
+      renderTasksPane();
+    });
+    showArchLbl.append(showArch, document.createTextNode(' Show archived'));
+    optRow.append(showArchLbl);
+    const archiveDays = el('input', { type: 'number', min: '1', class: 'select-sm', title: 'Archive completed after days' });
+    archiveDays.value = String(tasksViewState.archiveAfterDays || 7);
+    archiveDays.addEventListener('change', () => {
+      tasksViewState.archiveAfterDays = Math.max(1, Number(archiveDays.value) || 7);
+      saveTasksViewState();
+      renderTasksPane();
+    });
+    optRow.append(el('span', { class: 'subtext' }, 'Archive after'));
+    optRow.append(archiveDays);
+    optRow.append(el('span', { class: 'subtext' }, 'days'));
     controls.append(buildGroup('Options', optRow));
+
+    const bulkRow = el('div', { class: 'filter-row' });
+    const selectModeBtn = el('button', { class: `btn ghost${tasksViewState.selectionMode ? ' active' : ''}` }, tasksViewState.selectionMode ? 'Exit Select' : 'Select');
+    selectModeBtn.addEventListener('click', () => {
+      tasksViewState.selectionMode = !tasksViewState.selectionMode;
+      if (!tasksViewState.selectionMode) selectedTaskKeys = new Set();
+      renderTasksPane();
+    });
+    bulkRow.append(selectModeBtn);
+    if (tasksViewState.selectionMode) {
+      bulkRow.append(el('span', { class: 'subtext' }, `${selectedTaskKeys.size} selected`));
+      const doneBtn = el('button', { class: 'btn ghost' }, 'Complete');
+      doneBtn.addEventListener('click', () => {
+        const map = selectionEntries();
+        selectedTaskKeys.forEach((k) => {
+          const ref = map.get(k);
+          if (!ref) return;
+          if (ref.kind === 'subtask') setSubtaskCompleted(ref.task, ref.subtask, true);
+          else setTaskCompleted(ref.task, true);
+        });
+        selectedTaskKeys = new Set();
+        store.saveNow();
+        renderTasksPane();
+        showToast('Bulk complete applied');
+      });
+      const priSel = el('select', { class: 'select-sm' });
+      [1, 2, 3, 4, 5].forEach((p) => priSel.append(el('option', { value: String(p) }, `P${p}`)));
+      const priBtn = el('button', { class: 'btn ghost' }, 'Set Priority');
+      priBtn.addEventListener('click', () => {
+        const map = selectionEntries();
+        selectedTaskKeys.forEach((k) => {
+          const ref = map.get(k);
+          if (!ref) return;
+          ref.task.priority = Number(priSel.value);
+        });
+        store.saveNow();
+        renderTasksPane();
+        showToast('Priority updated');
+      });
+      const locInput = el('input', { type: 'text', placeholder: 'Add location tag...' });
+      const locBtn = el('button', { class: 'btn ghost' }, 'Retag');
+      locBtn.addEventListener('click', () => {
+        const v = locInput.value.trim();
+        if (!v) return;
+        const map = selectionEntries();
+        selectedTaskKeys.forEach((k) => {
+          const ref = map.get(k);
+          if (!ref) return;
+          const list = taskLocations(ref.task);
+          list.push(v);
+          setTaskLocations(ref.task, list);
+        });
+        locInput.value = '';
+        store.saveNow();
+        renderTasksPane();
+        showToast('Tags updated');
+      });
+      const delBtn = el('button', { class: 'btn ghost' }, 'Remove');
+      delBtn.addEventListener('click', () => {
+        const map = selectionEntries();
+        selectedTaskKeys.forEach((k) => {
+          const ref = map.get(k);
+          if (!ref) return;
+          if (ref.kind === 'subtask') ref.task.series = (ref.task.series || []).filter(s => s.id !== ref.subtask.id);
+          else ref.node.tasks = (ref.node.tasks || []).filter(x => x.id !== ref.task.id);
+        });
+        selectedTaskKeys = new Set();
+        store.saveNow();
+        renderTasksPane();
+        renderThreads();
+        showToast('Selected items removed');
+      });
+      bulkRow.append(doneBtn, priSel, priBtn, locInput, locBtn, delBtn);
+    }
+    controls.append(buildGroup('Selection', bulkRow));
   }
 
   const ctx = tasksViewState.currentContext === 'Any' ? null : tasksViewState.currentContext;
   const locSet = new Set(uniqTags(tasksViewState.locationTags || []).map(l => l.toLowerCase()));
   const maxDur = normalizeDurationValue(tasksViewState.durationMax);
-  const now = new Date();
   let entries = flattenTaskEntries();
   const filtered = entries.filter(ref => {
     const base = ref.task;
@@ -1736,15 +2551,26 @@ function renderTasksPane() {
     const okLoc = locSet.size === 0 || taskLocations(base).some(l => locSet.has(l.toLowerCase()));
     const dur = taskDurationMins(base);
     const okTime = !maxDur || (dur != null && dur <= maxDur);
-    const okAvail = tasksViewState.showBlocked ? true : isTaskAvailable(base, now, ctx);
-    return okCtx && okLoc && okTime && okAvail;
+    const okAvail = tasksViewState.showBlocked ? true : isTaskAvailable(base, now, ctx, depMap);
+    const textNeedle = (tasksViewState.searchText || '').trim().toLowerCase();
+    const textHay = [
+      ref.kind === 'subtask' ? ref.subtask.text : base.text,
+      nodePath(ref.node),
+      base.text,
+      taskLocations(base).join(' '),
+      (base.contexts || []).join(' '),
+    ].join(' ').toLowerCase();
+    const okSearch = !textNeedle || textHay.includes(textNeedle);
+    const archivedAt = ref.kind === 'subtask' ? ref.subtask.archivedAt : base.archivedAt;
+    const okArchived = tasksViewState.showArchived ? true : !archivedAt;
+    return okCtx && okLoc && okTime && okAvail && okSearch && okArchived;
   });
   entries = filtered
     .sort((a, b) => {
       const pa = a.task.priority || 3; const pb = b.task.priority || 3;
       if (pa !== pb) return pa - pb; // 1 highest
-      const aa = isTaskAvailable(a.task, now, ctx) ? 0 : 1;
-      const bb = isTaskAvailable(b.task, now, ctx) ? 0 : 1;
+      const aa = isTaskAvailable(a.task, now, ctx, depMap) ? 0 : 1;
+      const bb = isTaskAvailable(b.task, now, ctx, depMap) ? 0 : 1;
       if (aa !== bb) return aa - bb; // available first
       const da = a.task.availableAt ? new Date(a.task.availableAt).getTime() : Infinity;
       const db = b.task.availableAt ? new Date(b.task.availableAt).getTime() : Infinity;
@@ -1759,26 +2585,47 @@ function renderTasksPane() {
     const sub = ref.kind === 'subtask' ? ref.subtask : null;
     const done = sub ? !!sub.completed : !!t.completed;
     const item = el('div', { class: 'task' + (done ? ' completed' : ''), style: `border-left:6px solid ${r?.color || 'var(--accent)'}` });
+    const due = dueStatus(t, now);
+    if (due.state === 'overdue') item.classList.add('due-overdue');
+    else if (due.state === 'soon') item.classList.add('due-soon');
+    const archivedAt = sub ? sub.archivedAt : t.archivedAt;
+    if (archivedAt) item.classList.add('archived');
     const cb = el('input', { type: 'checkbox' });
     cb.checked = !!done;
     if (sub) {
       cb.addEventListener('change', () => {
-        sub.completed = cb.checked;
+        setSubtaskCompleted(t, sub, cb.checked);
         store.saveNow();
         renderTasksPane();
       });
     } else {
-      cb.addEventListener('change', () => { t.completed = cb.checked; store.saveNow(); item.classList.toggle('completed', t.completed); });
+      cb.addEventListener('change', () => {
+        setTaskCompleted(t, cb.checked);
+        store.saveNow();
+        item.classList.toggle('completed', t.completed);
+      });
     }
+    const key = entryKey(ref);
     const main = el('div');
     const titleRow = el('div', { class: 'task-title-row' });
     if (sub) {
       const step = Math.max(1, Number(sub.rank) || 1);
       titleRow.append(el('span', { class: 'pill step' }, `Step ${step}`));
     }
-    titleRow.append(el('div', { class: 'task-title' }, sub ? sub.text : t.text));
+    const titleInput = el('input', { type: 'text', class: 'task-title-input' });
+    titleInput.value = sub ? sub.text : t.text;
+    titleInput.addEventListener('change', () => {
+      const val = titleInput.value.trim();
+      if (!val) { titleInput.value = sub ? sub.text : t.text; return; }
+      if (sub) sub.text = val;
+      else t.text = val;
+      store.saveNow();
+      if (!$('#review-stage').hidden) renderStoryCard();
+      renderThreads();
+    });
+    titleRow.append(titleInput);
     main.append(titleRow);
-    const reason = availabilityReason(t, now, ctx);
+    const reason = availabilityReason(t, now, ctx, depMap);
     const ctxLine = nodePath(n) + (reason ? ` • ${reason}` : '');
     main.append(el('div', { class: 'ctx' }, ctxLine));
     if (sub) {
@@ -1798,16 +2645,6 @@ function renderTasksPane() {
     for (let i = 1; i <= 5; i++) pri.append(el('option', { value: String(i) }, i));
     pri.value = String(t.priority || 3);
     pri.addEventListener('change', () => { t.priority = Number(pri.value); store.saveNow(); renderTasksPane(); });
-    const edit = el('button', { class: 'btn ghost' }, 'Edit');
-    edit.addEventListener('click', () => {
-      if (sub) {
-        const val = confirmName('Edit subtask', sub.text);
-        if (val != null && val.trim()) { sub.text = val.trim(); store.save(); renderTasksPane(); }
-      } else {
-        const val = confirmName('Edit task', t.text);
-        if (val != null && val.trim()) { t.text = val.trim(); store.save(); renderTasksPane(); }
-      }
-    });
     const del = el('button', { class: 'btn ghost' }, 'Remove');
     del.addEventListener('click', () => {
       if (sub) {
@@ -1822,11 +2659,22 @@ function renderTasksPane() {
     avail.hidden = true;
     const availBtn = el('button', { class: 'btn ghost' }, 'Tags');
     availBtn.addEventListener('click', () => { avail.hidden = !avail.hidden; });
-    actions.append(pri, availBtn, edit, del);
+    if (tasksViewState.selectionMode) {
+      const pick = el('input', { type: 'checkbox', title: 'Select task' });
+      pick.checked = selectedTaskKeys.has(key);
+      if (pick.checked) item.classList.add('selected');
+      pick.addEventListener('change', () => {
+        if (pick.checked) selectedTaskKeys.add(key);
+        else selectedTaskKeys.delete(key);
+        item.classList.toggle('selected', pick.checked);
+      });
+      actions.append(pick);
+    }
+    actions.append(pri, availBtn, del);
     item.append(cb, main, actions);
     // Status tint classes
     if (done) item.classList.add('status-completed');
-    else if (isTaskAvailable(t, now, ctx)) item.classList.add('status-available');
+    else if (isTaskAvailable(t, now, ctx, depMap)) item.classList.add('status-available');
     else item.classList.add('status-blocked');
     // Availability controls in Tasks pane (hidden by default)
     item.append(avail);

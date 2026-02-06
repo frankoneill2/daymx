@@ -4,7 +4,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
     <title>DayMX – Daily Threads</title>
-    <link rel="stylesheet" href="src/styles.css?v=20260206-1" />
+    <link rel="stylesheet" href="src/styles.css?v=20260206-3" />
   </head>
   <body>
     <div id="lock" class="lock-overlay">
@@ -29,6 +29,19 @@
         <button id="tab-pantry" class="tab" role="tab" aria-selected="false">Pantry</button>
       </nav>
     </header>
+    <section class="utility-bar" aria-label="Quick tools">
+      <form id="quick-capture-form" class="quick-capture" autocomplete="off">
+        <input id="quick-capture-input" type="text" placeholder="Quick capture task..." />
+        <select id="quick-capture-target" title="Capture target"></select>
+        <button class="btn primary" type="submit">Capture</button>
+      </form>
+      <div class="utility-actions">
+        <input id="global-search" type="search" placeholder="Search threads, tasks, tags..." aria-label="Global search" />
+        <button id="btn-undo" class="btn ghost" type="button" title="Undo (Cmd/Ctrl+Z)">Undo</button>
+        <button id="btn-redo" class="btn ghost" type="button" title="Redo (Shift+Cmd/Ctrl+Z)">Redo</button>
+      </div>
+      <div id="search-results" class="search-results" hidden></div>
+    </section>
 
     <main id="view-prepare" class="view active" aria-labelledby="tab-prepare">
       <section class="section">
@@ -47,6 +60,7 @@
           <button id="btn-start-review" class="btn primary">Start Review</button>
         </div>
         <div id="review-empty" class="empty">No subthreads yet. Add some in Prepare.</div>
+        <div id="review-summary" class="review-summary" hidden></div>
         <div id="review-stage" class="review-stage" hidden>
           <div id="story-progress" class="story-progress" aria-hidden="true"></div>
           <div id="story-card" class="story-card" role="region" aria-live="polite"></div>
@@ -124,10 +138,11 @@
         <div id="modal-body" class="modal-body"></div>
       </div>
     </div>
+    <div id="toast" class="toast" hidden role="status" aria-live="polite"></div>
     </div>
 
-    <script type="module" src="src/firebase-init.js?v=20260202-4"></script>
-    <script src="src/lock.js?v=20260202-4"></script>
-    <script src="src/app.js?v=20260202-4"></script>
+    <script type="module" src="src/firebase-init.js?v=20260206-3"></script>
+    <script src="src/lock.js?v=20260206-3"></script>
+    <script src="src/app.js?v=20260206-3"></script>
   </body>
   </html>
