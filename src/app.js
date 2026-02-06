@@ -8,6 +8,7 @@ const REVIEW_STATE_KEY = 'daymx-review-state-v1';
 const PANTRY_REVIEW_STATE_KEY = 'daymx-pantry-review-state-v1';
 const TASKS_VIEW_STATE_KEY = 'daymx-tasks-view-v2';
 const UI_PREFS_KEY = 'daymx-ui-prefs-v1';
+const GAMIFICATION_KEY = 'daymx-gamification-v1';
 const HISTORY_LIMIT = 80;
 
 function uid(prefix = 'id') {
@@ -21,6 +22,8 @@ const defaultData = () => ({
 
 const LOCATION_PRESETS = ['mobile', 'laptop', 'home', 'work'];
 const DURATION_PRESETS = [1, 5, 15, 30, 60];
+const DAILY_POINTS_GOAL = 100;
+const SUBTASK_CREATION_POINTS = 5;
 
 function normalizeTagValue(value) {
   return String(value || '').trim();
@@ -218,6 +221,98 @@ const uiPrefs = {
   pantryTab: 'prepare',
   captureNodeId: null,
 };
+
+const gamificationState = {
+  daily: {},
+};
+
+function dayKeyFromDate(date = new Date()) {
+  const d = date instanceof Date ? date : new Date(date);
+  if (isNaN(d)) return '';
+  const yyyy = d.getFullYear();
+  const mm = String(d.getMonth() + 1).padStart(2, '0');
+  const dd = String(d.getDate()).padStart(2, '0');
+  return `${yyyy}-${mm}-${dd}`;
+}
+
+function saveGamificationState() {
+  try { localStorage.setItem(GAMIFICATION_KEY, JSON.stringify(gamificationState)); } catch {}
+}
+
+function loadGamificationState() {
+  const saved = safeJsonParse(localStorage.getItem(GAMIFICATION_KEY), null);
+  if (!saved || typeof saved !== 'object') {
+    gamificationState.daily = {};
+    return;
+  }
+  const daily = {};
+  Object.entries(saved.daily || {}).forEach(([k, v]) => {
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(k)) return;
+    const points = Math.max(0, Math.round(Number(v) || 0));
+    if (!points) return;
+    daily[k] = points;
+  });
+  gamificationState.daily = daily;
+}
+
+function pointsForTaskCompletion(task) {
+  const mins = taskDurationMins(task);
+  if (mins === 1) return 5;
+  if (mins === 5) return 10;
+  if (mins === 15) return 25;
+  return 0;
+}
+
+function awardPoints(points, when = new Date()) {
+  const value = Math.max(0, Math.round(Number(points) || 0));
+  if (!value) return 0;
+  const key = dayKeyFromDate(when);
+  if (!key) return 0;
+  gamificationState.daily[key] = (Number(gamificationState.daily[key]) || 0) + value;
+  saveGamificationState();
+  return value;
+}
+
+function todayPoints(date = new Date()) {
+  return Number(gamificationState.daily[dayKeyFromDate(date)] || 0);
+}
+
+function currentStreak(date = new Date()) {
+  const cur = new Date(date);
+  if (isNaN(cur)) return 0;
+  cur.setHours(0, 0, 0, 0);
+  const todayKey = dayKeyFromDate(cur);
+  if (Number(gamificationState.daily[todayKey] || 0) < DAILY_POINTS_GOAL) {
+    cur.setDate(cur.getDate() - 1);
+  }
+  let streak = 0;
+  while (true) {
+    const key = dayKeyFromDate(cur);
+    const points = Number(gamificationState.daily[key] || 0);
+    if (points < DAILY_POINTS_GOAL) break;
+    streak += 1;
+    cur.setDate(cur.getDate() - 1);
+  }
+  return streak;
+}
+
+function completedGoalDays() {
+  return Object.values(gamificationState.daily).filter(v => Number(v) >= DAILY_POINTS_GOAL).length;
+}
+
+function gamificationSummary(now = new Date()) {
+  const points = todayPoints(now);
+  const goal = DAILY_POINTS_GOAL;
+  const pct = Math.max(0, Math.min(100, Math.round((points / goal) * 100)));
+  return {
+    goal,
+    points,
+    pct,
+    remaining: Math.max(0, goal - points),
+    streak: currentStreak(now),
+    goalDays: completedGoalDays(),
+  };
+}
 
 const dragState = {
   kind: null, // 'node' | 'task' | 'subtask'
@@ -509,6 +604,29 @@ function sortSeriesByRankOrder(task) {
   refreshSeriesOrder(task);
 }
 
+function nextSeriesRank(task) {
+  const ranks = (task?.series || []).map((s) => Math.max(1, Number(s.rank) || 1));
+  if (!ranks.length) return 1;
+  return Math.max(...ranks) + 1;
+}
+
+function addSubtaskToTask(task, text, rank = null, now = new Date()) {
+  const label = String(text || '').trim();
+  if (!label) return null;
+  const resolvedRank = rank == null ? nextSeriesRank(task) : Math.max(1, Number(rank) || 1);
+  const item = createSubtask(label, resolvedRank);
+  item.order = (task.series || []).length;
+  task.series = (task.series || []).concat([item]);
+  sortSeriesByRankOrder(task);
+  // Any newly-added subtask should re-open the parent task if it was previously complete.
+  task.completed = false;
+  task.completedAt = null;
+  task.archivedAt = null;
+  task.nextRecurringAt = null;
+  awardPoints(SUBTASK_CREATION_POINTS, now);
+  return item;
+}
+
 function moveSubtaskRelative(nodeId, taskId, sourceSubtaskId, targetSubtaskId, placeAfter = false) {
   const node = findNodeById(store.data.threads || [], nodeId);
   const task = (node?.tasks || []).find((t) => t.id === taskId);
@@ -710,6 +828,7 @@ function dueStatus(task, now = new Date()) {
 }
 
 function setTaskCompleted(task, completed, now = new Date()) {
+  const wasCompleted = !!task.completed;
   task.completed = !!completed;
   if (task.completed) {
     task.completedAt = now.toISOString();
@@ -718,6 +837,9 @@ function setTaskCompleted(task, completed, now = new Date()) {
     task.completedAt = null;
     task.archivedAt = null;
     task.nextRecurringAt = null;
+  }
+  if (!wasCompleted && task.completed) {
+    awardPoints(pointsForTaskCompletion(task), now);
   }
 }
 
@@ -902,6 +1024,51 @@ function buildTaskTagline(t, reason = '', opts = {}) {
   }
   if (reason) line.append(el('span', { class: 'pill warn' }, reason));
   return line;
+}
+
+function buildBreakIntoStepsCta(onAddStep) {
+  const wrap = el('div', { class: 'breakdown-cta' });
+  const copy = el('div', { class: 'breakdown-copy' }, 'Break this into smaller steps (+5 each)');
+  const trigger = el('button', { class: 'btn ghost breakdown-trigger', type: 'button' }, 'Break Into Steps');
+  const compose = el('div', { class: 'breakdown-compose' });
+  compose.hidden = true;
+  const input = el('input', { type: 'text', placeholder: 'First actionable step...' });
+  const add = el('button', { class: 'btn ghost', type: 'button' }, 'Add');
+  const cancel = el('button', { class: 'btn ghost', type: 'button' }, 'Cancel');
+  const closeCompose = () => {
+    compose.hidden = true;
+    trigger.hidden = false;
+    input.value = '';
+  };
+  trigger.addEventListener('click', () => {
+    compose.hidden = false;
+    trigger.hidden = true;
+    input.focus();
+  });
+  const addStep = () => {
+    const value = input.value.trim();
+    if (!value) {
+      input.focus();
+      return;
+    }
+    if (onAddStep(value) === false) return;
+    closeCompose();
+  };
+  add.addEventListener('click', addStep);
+  cancel.addEventListener('click', closeCompose);
+  input.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') {
+      e.preventDefault();
+      addStep();
+    }
+    if (e.key === 'Escape') {
+      e.preventDefault();
+      closeCompose();
+    }
+  });
+  compose.append(input, add, cancel);
+  wrap.append(copy, trigger, compose);
+  return wrap;
 }
 
 function buildAvailabilityControls(nodeId, taskId, rerender) {
@@ -1278,10 +1445,7 @@ function buildAvailabilityControls(nodeId, taskId, rerender) {
     const txt = addText.value.trim(); if (!txt) return;
     const rank = Math.max(1, Number(addRank.value) || 1);
     updateTask(task => {
-      const item = createSubtask(txt, rank);
-      item.order = (task.series || []).length;
-      task.series = (task.series || []).concat([item]);
-      sortSeriesByRankOrder(task);
+      addSubtaskToTask(task, txt, rank);
     });
     addText.value = '';
     addRank.value = String(rank);
@@ -1870,6 +2034,21 @@ function renderStoryCard() {
     const reason = availabilityReason(t, now, null, depMap);
     const tagline = buildTaskTagline(t, reason);
     if (tagline) main.append(tagline);
+    if (!isSeries) {
+      const breakdown = buildBreakIntoStepsCta((stepText) => {
+        const live = findNodeById(store.data.threads, n.id);
+        const ti = live?.tasks?.findIndex(x => x.id === t.id) ?? -1;
+        if (ti < 0) return false;
+        addSubtaskToTask(live.tasks[ti], stepText, 1);
+        store.saveNow();
+        renderThreads();
+        renderProgress();
+        renderStoryCard();
+        showToast('Series started');
+        return true;
+      });
+      main.append(breakdown);
+    }
     item.append(cb, main, btns);
     // Availability controls (Review, hidden by default)
     item.append(avail);
@@ -1989,6 +2168,7 @@ function closeModal() { $('#modal').hidden = true; }
 async function init() {
   loadUiPrefs();
   loadTasksViewState();
+  loadGamificationState();
   // Attempt Firebase first; fallback to localStorage
   const usedFirebase = await store.tryFirebase();
   if (!usedFirebase) store.load();
@@ -2658,6 +2838,7 @@ function renderTasksPane() {
     estimateTaggedMins += mins;
     estimateTaggedCount += 1;
   });
+  const score = gamificationSummary(now);
 
   const currentSelectionMap = selectionEntries();
   selectedTaskKeys = new Set([...selectedTaskKeys].filter(k => currentSelectionMap.has(k)));
@@ -2681,6 +2862,23 @@ function renderTasksPane() {
     };
 
     const summary = el('div', { class: 'tasks-summary' });
+    const scorePanel = el('div', { class: `points-panel${score.points >= score.goal ? ' complete' : ''}` });
+    const scoreHead = el('div', { class: 'points-head' });
+    scoreHead.append(
+      el('div', { class: 'points-title' }, 'Daily Points'),
+      el('div', { class: 'points-value' }, `${score.points}/${score.goal}`)
+    );
+    const scoreMeta = score.remaining
+      ? `${score.remaining} to goal • Streak ${score.streak} day${score.streak === 1 ? '' : 's'}`
+      : `Goal reached • Streak ${score.streak} day${score.streak === 1 ? '' : 's'}`;
+    const scoreSub = el('div', { class: 'points-meta' }, `${scoreMeta} • Goal days ${score.goalDays}`);
+    const scoreBar = el('div', { class: 'points-bar', role: 'progressbar', 'aria-valuemin': '0', 'aria-valuemax': String(score.goal), 'aria-valuenow': String(score.points) });
+    const scoreFill = el('div', { class: 'points-fill' });
+    scoreFill.style.width = `${score.pct}%`;
+    scoreBar.append(scoreFill);
+    scorePanel.append(scoreHead, scoreSub, scoreBar);
+    controls.append(scorePanel);
+
     const estimateLabel = formatDuration(estimateTaggedMins) || '0m';
     summary.append(
       metric('Matching', stats.total),
@@ -3019,6 +3217,21 @@ function renderTasksPane() {
     }
     const tagline = buildTaskTagline(t, '', { includeSeries: !sub });
     if (tagline) main.append(tagline);
+    if (!sub && !isSeriesTask(t)) {
+      const breakdown = buildBreakIntoStepsCta((stepText) => {
+        addSubtaskToTask(t, stepText, 1);
+        store.saveNow();
+        renderThreads();
+        if (!$('#review-stage').hidden) {
+          renderProgress();
+          renderStoryCard();
+        }
+        renderTasksPane();
+        showToast('Series started');
+        return true;
+      });
+      main.append(breakdown);
+    }
     const actions = el('div', { class: 'meta' });
     const pri = el('select', { class: 'priority-select', title: 'Priority' });
     for (let i = 1; i <= 5; i++) pri.append(el('option', { value: String(i) }, i));
