@@ -1832,6 +1832,28 @@ let reviewState = {
   idx: 0,
 };
 
+function hasActiveReviewProgress() {
+  return Array.isArray(reviewState.ids) && reviewState.ids.length > 0;
+}
+
+function syncReviewStateToCurrentNodes() {
+  const nodes = subthreadsForReview();
+  const ids = nodes.map((n) => n.id);
+  if (!ids.length) {
+    reviewState = { ids: [], idx: 0 };
+    clearReviewProgress();
+    return false;
+  }
+  let idx = Math.min(Math.max(0, Number(reviewState.idx) || 0), ids.length - 1);
+  const currentId = reviewState.ids[reviewState.idx] || null;
+  if (currentId) {
+    const j = ids.indexOf(currentId);
+    if (j >= 0) idx = j;
+  }
+  reviewState = { ids, idx };
+  return true;
+}
+
 function saveReviewProgress() {
   try {
     if (!reviewState.ids.length) { localStorage.removeItem(REVIEW_STATE_KEY); return; }
@@ -2172,6 +2194,7 @@ function nextStory() {
   } else {
     // End of review: hide stage, show start button and a completion message
     renderReviewSummary();
+    reviewState = { ids: [], idx: 0 };
     $('#btn-start-review').hidden = false;
     clearReviewProgress();
   }
@@ -2337,10 +2360,18 @@ function switchView(name) {
 }
 
 function onReviewVisibility() {
-  const nodes = subthreadsForReview();
-  const has = nodes.length > 0;
   const summary = $('#review-summary');
   if (summary) summary.hidden = true;
+  if (hasActiveReviewProgress() && syncReviewStateToCurrentNodes()) {
+    $('#review-empty').hidden = true;
+    $('#review-stage').hidden = false;
+    $('#btn-start-review').hidden = true;
+    renderProgress();
+    renderStoryCard();
+    saveReviewProgress();
+    return;
+  }
+  const has = subthreadsForReview().length > 0;
   // Show empty only when there are no subthreads; stage remains hidden until start
   const empty = $('#review-empty');
   if (has) {
