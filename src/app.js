@@ -534,6 +534,7 @@ function createTask(text = '') {
     followUpAt: null,
     recurrence: 'none',
     nextRecurringAt: null,
+    completionPointsAwardedAt: null,
     loc: '',
     locations: [],
     duration: null,
@@ -822,6 +823,7 @@ function normalizeNode(n) {
     if (!('recurrence' in t)) t.recurrence = 'none';
     if (!['none', 'daily', 'weekly', 'monthly'].includes(t.recurrence)) t.recurrence = 'none';
     if (!('nextRecurringAt' in t)) t.nextRecurringAt = null;
+    if (!('completionPointsAwardedAt' in t)) t.completionPointsAwardedAt = null;
     if (!('loc' in t)) t.loc = '';
     if (!('locations' in t)) t.locations = [];
     if (!Array.isArray(t.locations)) t.locations = [];
@@ -845,6 +847,10 @@ function normalizeNode(n) {
     });
     sortSeriesByRankOrder(t);
     if (t.completed && !t.completedAt) t.completedAt = t.createdAt || nowIso();
+    if (t.completed && !t.completionPointsAwardedAt) {
+      // Legacy migration: treat existing completed tasks as already awarded.
+      t.completionPointsAwardedAt = t.completedAt || nowIso();
+    }
   });
   n.children.forEach(normalizeNode);
 }
@@ -916,8 +922,9 @@ function setTaskCompleted(task, completed, now = new Date()) {
     task.archivedAt = null;
     task.nextRecurringAt = null;
   }
-  if (!wasCompleted && task.completed) {
-    awardPoints(pointsForTaskCompletion(task), now);
+  if (!wasCompleted && task.completed && !task.completionPointsAwardedAt) {
+    const awarded = awardPoints(pointsForTaskCompletion(task), now);
+    if (awarded > 0) task.completionPointsAwardedAt = now.toISOString();
   }
 }
 
@@ -972,6 +979,7 @@ function runRecurringTasks(now = new Date()) {
     task.completedAt = null;
     task.archivedAt = null;
     task.nextRecurringAt = null;
+    task.completionPointsAwardedAt = null;
     if (isSeriesTask(task)) {
       task.series.forEach((s) => {
         s.completed = false;
