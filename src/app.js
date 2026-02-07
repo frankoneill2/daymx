@@ -22,6 +22,7 @@ const defaultData = () => ({
 
 const LOCATION_PRESETS = ['mobile', 'laptop', 'home', 'work'];
 const DURATION_PRESETS = [1, 5, 15, 30, 60];
+const PRIORITY_PRESETS = [1, 2, 3, 4, 5];
 const DAILY_POINTS_GOAL = 100;
 const SUBTASK_CREATION_POINTS = 5;
 
@@ -65,6 +66,19 @@ function formatDuration(mins) {
   const h = Math.floor(v / 60);
   const m = v % 60;
   return `${h}h ${m}m`;
+}
+
+function normalizePriorityList(list) {
+  const out = [];
+  const seen = new Set();
+  (list || []).forEach((raw) => {
+    const n = Number(raw);
+    if (!Number.isInteger(n) || n < 1 || n > 5) return;
+    if (seen.has(n)) return;
+    seen.add(n);
+    out.push(n);
+  });
+  return out.sort((a, b) => a - b);
 }
 
 function taskLocations(t) {
@@ -2619,6 +2633,7 @@ let tasksViewState = {
   currentContext: 'Any',
   locationTags: [],
   durationMax: null,
+  priorityValues: [],
   showBlocked: false,
   searchText: '',
   archiveAfterDays: 7,
@@ -2636,6 +2651,7 @@ function saveTasksViewState() {
     currentContext: tasksViewState.currentContext,
     locationTags: tasksViewState.locationTags,
     durationMax: tasksViewState.durationMax,
+    priorityValues: tasksViewState.priorityValues,
     showBlocked: tasksViewState.showBlocked,
     searchText: tasksViewState.searchText,
     archiveAfterDays: tasksViewState.archiveAfterDays,
@@ -2653,6 +2669,7 @@ function loadTasksViewState() {
   tasksViewState.currentContext = saved.currentContext || 'Any';
   tasksViewState.locationTags = uniqTags(saved.locationTags || []);
   tasksViewState.durationMax = normalizeDurationValue(saved.durationMax);
+  tasksViewState.priorityValues = normalizePriorityList(saved.priorityValues || []);
   tasksViewState.showBlocked = !!saved.showBlocked;
   tasksViewState.searchText = (saved.searchText || '').trim();
   tasksViewState.archiveAfterDays = Number(saved.archiveAfterDays) > 0 ? Number(saved.archiveAfterDays) : 7;
@@ -2866,6 +2883,7 @@ function renderTasksPane() {
   const ctx = tasksViewState.currentContext === 'Any' ? null : tasksViewState.currentContext;
   const locSet = new Set(uniqTags(tasksViewState.locationTags || []).map(l => l.toLowerCase()));
   const maxDur = normalizeDurationValue(tasksViewState.durationMax);
+  const priSet = new Set(normalizePriorityList(tasksViewState.priorityValues || []));
   const textNeedle = (tasksViewState.searchText || '').trim().toLowerCase();
 
   const allEntries = flattenTaskEntries();
@@ -2875,6 +2893,7 @@ function renderTasksPane() {
     const okLoc = locSet.size === 0 || taskLocations(base).some(l => locSet.has(l.toLowerCase()));
     const dur = taskDurationMins(base);
     const okTime = !maxDur || (dur != null && dur <= maxDur);
+    const okPriority = priSet.size === 0 || priSet.has(Number(base.priority || 3));
     const textHay = [
       ref.kind === 'subtask' ? ref.subtask.text : base.text,
       nodePath(ref.node),
@@ -2885,7 +2904,7 @@ function renderTasksPane() {
     const okSearch = !textNeedle || textHay.includes(textNeedle);
     const archivedAt = ref.kind === 'subtask' ? ref.subtask.archivedAt : base.archivedAt;
     const okArchived = tasksViewState.showArchived ? true : !archivedAt;
-    return okCtx && okLoc && okTime && okSearch && okArchived;
+    return okCtx && okLoc && okTime && okPriority && okSearch && okArchived;
   });
 
   const enriched = baseFiltered.map((ref) => {
@@ -3017,6 +3036,11 @@ function renderTasksPane() {
     };
     if (textNeedle) addFilterChip(`Search: ${tasksViewState.searchText}`, () => { tasksViewState.searchText = ''; });
     if (ctx) addFilterChip(`Context: ${ctx}`, () => { tasksViewState.currentContext = 'Any'; });
+    (tasksViewState.priorityValues || []).forEach((p) => {
+      addFilterChip(`Priority: P${p}`, () => {
+        tasksViewState.priorityValues = normalizePriorityList((tasksViewState.priorityValues || []).filter((x) => Number(x) !== Number(p)));
+      });
+    });
     (tasksViewState.locationTags || []).forEach((loc) => {
       addFilterChip(`Loc: ${loc}`, () => {
         tasksViewState.locationTags = uniqTags((tasksViewState.locationTags || []).filter(x => x.toLowerCase() !== loc.toLowerCase()));
@@ -3034,6 +3058,7 @@ function renderTasksPane() {
         tasksViewState.currentContext = 'Any';
         tasksViewState.locationTags = [];
         tasksViewState.durationMax = null;
+        tasksViewState.priorityValues = [];
         tasksViewState.showBlocked = false;
         tasksViewState.searchText = '';
         tasksViewState.showArchived = false;
@@ -3121,6 +3146,32 @@ function renderTasksPane() {
       timeRow.append(btn);
     }
     controls.append(buildGroup('Time ≤', timeRow));
+
+    const priRow = el('div', { class: 'filter-row' });
+    const activePriorities = normalizePriorityList(tasksViewState.priorityValues || []);
+    const priActiveSet = new Set(activePriorities);
+    const priAny = el('button', { class: `chip toggle${activePriorities.length ? '' : ' active'}` }, 'Any');
+    priAny.addEventListener('click', () => {
+      tasksViewState.priorityValues = [];
+      saveTasksViewState();
+      renderTasksPane();
+    });
+    priRow.append(priAny);
+    PRIORITY_PRESETS.forEach((p) => {
+      const active = priActiveSet.has(p);
+      const btn = el('button', { class: `chip toggle${active ? ' active' : ''}` }, `P${p}`);
+      btn.addEventListener('click', () => {
+        const next = normalizePriorityList(activePriorities);
+        const idx = next.indexOf(p);
+        if (idx >= 0) next.splice(idx, 1);
+        else next.push(p);
+        tasksViewState.priorityValues = normalizePriorityList(next);
+        saveTasksViewState();
+        renderTasksPane();
+      });
+      priRow.append(btn);
+    });
+    controls.append(buildGroup('Priority', priRow));
 
     const sortRow = el('div', { class: 'filter-row' });
     const mkSort = (key, label) => {
