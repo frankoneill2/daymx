@@ -762,6 +762,14 @@ button:focus-visible {
   border-color: color-mix(in srgb, var(--accent) 36%, var(--border));
 }
 
+.task.next-step-focus {
+  border-color: color-mix(in srgb, var(--accent-2) 72%, var(--border));
+  box-shadow:
+    inset 0 0 0 1px color-mix(in srgb, var(--accent-2) 46%, transparent),
+    0 0 0 2px rgba(77, 224, 164, 0.26);
+  animation: next-step-pulse 800ms ease;
+}
+
 .task.completed {
   opacity: 0.64;
   text-decoration: line-through;
@@ -1544,6 +1552,18 @@ button.chip.toggle.active {
   }
   to {
     opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+@keyframes next-step-pulse {
+  from {
+    transform: translateY(0) scale(1);
+  }
+  50% {
+    transform: translateY(-1px) scale(1.006);
+  }
+  to {
     transform: translateY(0) scale(1);
   }
 }

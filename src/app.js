@@ -2629,6 +2629,7 @@ let tasksViewState = {
   selectionMode: false,
 };
 let selectedTaskKeys = new Set();
+let pendingSeriesReveal = null;
 
 function saveTasksViewState() {
   const payload = {
@@ -2800,6 +2801,58 @@ function allDurations() {
   return Array.from(set).sort((a, b) => a - b);
 }
 
+function isElementOnScreen(node) {
+  if (!node) return false;
+  const rect = node.getBoundingClientRect();
+  const vh = window.innerHeight || document.documentElement.clientHeight;
+  return rect.top >= 72 && rect.bottom <= vh - 20;
+}
+
+function applyPendingSeriesReveal(entries) {
+  if (!pendingSeriesReveal || !Array.isArray(entries) || !entries.length) return entries;
+  const keys = (pendingSeriesReveal.nextKeys || []).filter(Boolean);
+  if (!keys.length) return entries;
+  const list = entries.slice();
+  const moved = [];
+  keys.forEach((k) => {
+    const idx = list.findIndex((e) => entryKey(e) === k);
+    if (idx < 0) return;
+    moved.push(list[idx]);
+    list.splice(idx, 1);
+  });
+  if (!moved.length) return entries;
+  const fromIndex = Math.max(0, Math.min(list.length, Number(pendingSeriesReveal.fromIndex) || 0));
+  list.splice(fromIndex, 0, ...moved);
+  return list;
+}
+
+function flushPendingSeriesRevealUi() {
+  if (!pendingSeriesReveal) return;
+  const keys = (pendingSeriesReveal.nextKeys || []).filter(Boolean);
+  let target = null;
+  for (const k of keys) {
+    const node = document.querySelector(`#tasks-root .task[data-entry-key="${k}"]`);
+    if (!node) continue;
+    target = node;
+    break;
+  }
+  if (!target) {
+    pendingSeriesReveal = null;
+    return;
+  }
+  if (!isElementOnScreen(target)) {
+    target.scrollIntoView({ behavior: 'smooth', block: 'center' });
+  }
+  target.classList.add('next-step-focus');
+  setTimeout(() => target.classList.remove('next-step-focus'), 1800);
+  if (pendingSeriesReveal.nextLabel) {
+    showToast(`Next step unlocked: ${pendingSeriesReveal.nextLabel}`);
+  } else {
+    showToast('Next step unlocked');
+  }
+  pendingSeriesReveal = null;
+}
+
 function renderTasksPane() {
   const root = $('#tasks-root');
   if (!root) return;
@@ -2883,6 +2936,7 @@ function renderTasksPane() {
   };
   const sortBy = ['priority', 'due', 'path'].includes(tasksViewState.sortBy) ? tasksViewState.sortBy : 'priority';
   entries = entries.slice().sort(sorters[sortBy]);
+  entries = applyPendingSeriesReveal(entries);
 
   const seenEstimateTasks = new Set();
   let estimateTaggedMins = 0;
@@ -2900,6 +2954,7 @@ function renderTasksPane() {
 
   const currentSelectionMap = selectionEntries();
   selectedTaskKeys = new Set([...selectedTaskKeys].filter(k => currentSelectionMap.has(k)));
+  const orderIndexByKey = new Map(entries.map((entry, idx) => [entryKey(entry), idx]));
 
   // Controls
   const controls = $('#tasks-controls');
@@ -3214,13 +3269,19 @@ function renderTasksPane() {
   if (!entries.length) {
     const msg = stats.total ? 'No tasks in the current view.' : 'No tasks match the current filters.';
     root.append(el('div', { class: 'empty' }, msg));
+    pendingSeriesReveal = null;
     return;
   }
 
   const makeTaskCard = (ref) => {
     const { task: t, node: n, root: r } = ref;
     const sub = ref.kind === 'subtask' ? ref.subtask : null;
-    const item = el('div', { class: 'task' + (ref.done ? ' completed' : ''), style: `border-left:6px solid ${r?.color || 'var(--accent)'}` });
+    const key = entryKey(ref);
+    const item = el('div', {
+      class: 'task' + (ref.done ? ' completed' : ''),
+      style: `border-left:6px solid ${r?.color || 'var(--accent)'}`,
+      'data-entry-key': key,
+    });
     if (ref.due.state === 'overdue') item.classList.add('due-overdue');
     else if (ref.due.state === 'soon') item.classList.add('due-soon');
     if (ref.archivedAt) item.classList.add('archived');
@@ -3228,18 +3289,38 @@ function renderTasksPane() {
     cb.checked = !!ref.done;
     if (sub) {
       cb.addEventListener('change', () => {
+        const wasDone = !!sub.completed;
         setSubtaskCompleted(t, sub, cb.checked);
+        if (!wasDone && cb.checked) {
+          const statsAfter = seriesStats(t);
+          const nextItems = (statsAfter?.activeItems || []).filter((s) => !s.completed);
+          const nextKeys = nextItems.map((s) => `subtask:${t.id}:${s.id}`);
+          if (nextKeys.length) {
+            const nextLabel = nextItems.length === 1
+              ? (nextItems[0].text || 'Next step')
+              : `${nextItems.length} steps unlocked`;
+            pendingSeriesReveal = {
+              fromIndex: orderIndexByKey.get(key) ?? 0,
+              nextKeys,
+              nextLabel,
+            };
+          } else {
+            pendingSeriesReveal = null;
+          }
+        } else {
+          pendingSeriesReveal = null;
+        }
         store.saveNow();
         renderTasksPane();
       });
     } else {
       cb.addEventListener('change', () => {
+        pendingSeriesReveal = null;
         setTaskCompleted(t, cb.checked);
         store.saveNow();
         renderTasksPane();
       });
     }
-    const key = entryKey(ref);
     const main = el('div', { class: 'task-main' });
     const titleRow = el('div', { class: 'task-title-row' });
     if (sub) {
@@ -3351,12 +3432,14 @@ function renderTasksPane() {
       group.items.forEach((entry) => section.append(makeTaskCard(entry)));
       root.append(section);
     });
+    flushPendingSeriesRevealUi();
     return;
   }
 
   for (const ref of entries) {
     root.append(makeTaskCard(ref));
   }
+  flushPendingSeriesRevealUi();
 }
 
 document.addEventListener('DOMContentLoaded', async () => {
