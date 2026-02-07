@@ -18,6 +18,7 @@ function uid(prefix = 'id') {
 const defaultData = () => ({
   threads: [], // array of nodes
   pantry: { categories: [] },
+  gamification: { daily: {} },
 });
 
 const LOCATION_PRESETS = ['mobile', 'laptop', 'home', 'work'];
@@ -174,12 +175,16 @@ const store = {
         // Seed empty doc so subscription works
         await window.daymxFirebase.setData(this.data);
       }
+      ensureGamificationInData(this.data);
+      setRuntimeGamificationFromData(this.data);
       this.mode = 'firebase';
       // Subscribe to live updates
       this.unsub = window.daymxFirebase.subscribe((remote) => {
         if (!remote) return;
         this.data = remote;
         if (!this.data.pantry) this.data.pantry = { categories: [] };
+        ensureGamificationInData(this.data);
+        setRuntimeGamificationFromData(this.data);
         // Normalize and refresh UI on remote updates
         (this.data.threads || []).forEach(normalizeNode);
         (this.data.pantry.categories || []).forEach(normalizeCategory);
@@ -207,6 +212,8 @@ const store = {
       this.data = defaultData();
     }
     if (!this.data.pantry) this.data.pantry = { categories: [] };
+    ensureGamificationInData(this.data);
+    setRuntimeGamificationFromData(this.data);
   },
   async save() {
     pushHistorySnapshot();
@@ -240,6 +247,38 @@ const gamificationState = {
   daily: {},
 };
 
+function normalizeGamificationDaily(rawDaily) {
+  const daily = {};
+  Object.entries(rawDaily || {}).forEach(([k, v]) => {
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(k)) return;
+    const points = Math.max(0, Math.round(Number(v) || 0));
+    if (!points) return;
+    daily[k] = points;
+  });
+  return daily;
+}
+
+function ensureGamificationInData(data) {
+  if (!data || typeof data !== 'object') return { daily: {} };
+  if (!data.gamification || typeof data.gamification !== 'object') data.gamification = { daily: {} };
+  data.gamification.daily = normalizeGamificationDaily(data.gamification.daily || {});
+  return data.gamification;
+}
+
+function setRuntimeGamificationFromData(data) {
+  const g = ensureGamificationInData(data);
+  gamificationState.daily = g.daily;
+}
+
+function mergeGamificationDaily(baseDaily, incomingDaily) {
+  const out = { ...normalizeGamificationDaily(baseDaily || {}) };
+  const incoming = normalizeGamificationDaily(incomingDaily || {});
+  Object.entries(incoming).forEach(([k, v]) => {
+    out[k] = Math.max(Number(out[k] || 0), Number(v || 0));
+  });
+  return out;
+}
+
 const openTagPanels = {
   prepare: new Set(),
   review: new Set(),
@@ -269,23 +308,27 @@ function dayKeyFromDate(date = new Date()) {
 }
 
 function saveGamificationState() {
-  try { localStorage.setItem(GAMIFICATION_KEY, JSON.stringify(gamificationState)); } catch {}
+  // Keep runtime state attached to shared store data so Firebase sync can propagate across devices.
+  if (store.data && typeof store.data === 'object') {
+    const g = ensureGamificationInData(store.data);
+    g.daily = mergeGamificationDaily(g.daily, gamificationState.daily);
+    gamificationState.daily = g.daily;
+  } else {
+    gamificationState.daily = normalizeGamificationDaily(gamificationState.daily);
+  }
+  // Legacy local cache retained as a migration/fallback source.
+  try { localStorage.setItem(GAMIFICATION_KEY, JSON.stringify({ daily: gamificationState.daily })); } catch {}
 }
 
 function loadGamificationState() {
-  const saved = safeJsonParse(localStorage.getItem(GAMIFICATION_KEY), null);
-  if (!saved || typeof saved !== 'object') {
-    gamificationState.daily = {};
-    return;
-  }
-  const daily = {};
-  Object.entries(saved.daily || {}).forEach(([k, v]) => {
-    if (!/^\d{4}-\d{2}-\d{2}$/.test(k)) return;
-    const points = Math.max(0, Math.round(Number(v) || 0));
-    if (!points) return;
-    daily[k] = points;
-  });
-  gamificationState.daily = daily;
+  const g = ensureGamificationInData(store.data || defaultData());
+  const before = JSON.stringify(g.daily || {});
+  const saved = safeJsonParse((typeof localStorage !== 'undefined' ? localStorage.getItem(GAMIFICATION_KEY) : null), null);
+  const legacyDaily = normalizeGamificationDaily(saved?.daily || {});
+  g.daily = mergeGamificationDaily(g.daily, legacyDaily);
+  gamificationState.daily = g.daily;
+  try { localStorage.setItem(GAMIFICATION_KEY, JSON.stringify({ daily: gamificationState.daily })); } catch {}
+  return JSON.stringify(g.daily || {}) !== before;
 }
 
 function pointsForTaskCompletion(task) {
@@ -437,6 +480,8 @@ function applyHistorySnapshot(serialized, pushTo) {
   else if (pushTo === 'undo') historyState.undo.push(current);
   store.data = safeJsonParse(serialized, defaultData()) || defaultData();
   if (!store.data.pantry) store.data.pantry = { categories: [] };
+  ensureGamificationInData(store.data);
+  setRuntimeGamificationFromData(store.data);
   (store.data.threads || []).forEach(normalizeNode);
   (store.data.pantry.categories || []).forEach(normalizeCategory);
   autoAssignThreadColors();
@@ -2232,10 +2277,11 @@ function closeModal() { $('#modal').hidden = true; }
 async function init() {
   loadUiPrefs();
   loadTasksViewState();
-  loadGamificationState();
   // Attempt Firebase first; fallback to localStorage
   const usedFirebase = await store.tryFirebase();
   if (!usedFirebase) store.load();
+  const gamificationChanged = loadGamificationState();
+  if (gamificationChanged) store.saveNow();
   // Normalize, colorize and index
   (store.data.threads || []).forEach(normalizeNode);
   (store.data.pantry?.categories || []).forEach(normalizeCategory);
