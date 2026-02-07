@@ -3493,9 +3493,33 @@ function renderTasksPane() {
   flushPendingSeriesRevealUi();
 }
 
-document.addEventListener('DOMContentLoaded', async () => {
-  if (window.daymxUnlockReady) {
-    try { await window.daymxUnlockReady; } catch {}
-  }
-  init();
-});
+if (typeof document !== 'undefined') {
+  document.addEventListener('DOMContentLoaded', async () => {
+    if (window.daymxUnlockReady) {
+      try { await window.daymxUnlockReady; } catch {}
+    }
+    init();
+  });
+}
+
+if (typeof module !== 'undefined' && module.exports) {
+  module.exports = {
+    __test: {
+      normalizeDurationValue,
+      formatDuration,
+      normalizePriorityList,
+      dayKeyFromDate,
+      pointsForTaskCompletion,
+      setTaskCompleted,
+      setSubtaskCompleted,
+      gamificationSummary,
+      awardPoints,
+      resetGamificationState: () => { gamificationState.daily = {}; },
+      setGamificationDayPoints: (key, points) => {
+        if (!/^\d{4}-\d{2}-\d{2}$/.test(String(key || ''))) return;
+        gamificationState.daily[String(key)] = Math.max(0, Number(points) || 0);
+      },
+      getGamificationState: () => JSON.parse(JSON.stringify(gamificationState)),
+    },
+  };
+}

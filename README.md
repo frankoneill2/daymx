@@ -20,6 +20,20 @@ Run (Server + Database)
   - The app will auto-detect the API at `/api/data` and persist to `server/db.json`.
   - If the API is not reachable, it falls back to localStorage.
 
+Testing Harness
+
+- The project includes three layers of tests:
+  - Unit tests (`tests/unit`) for pure helper logic.
+  - Integration tests (`tests/integration`) for multi-function behavior (scoring + series rules).
+  - End-to-end browser tests (`tests/e2e`) using Playwright against the running app.
+- Install dependencies: `npm install`
+- Run all unit/integration tests: `npm test`
+- Run unit only: `npm run test:unit`
+- Run integration only: `npm run test:integration`
+- Run end-to-end tests: `npm run test:e2e`
+- CI-style full run: `npm run test:ci`
+- First-time Playwright setup (if needed): `npx playwright install --with-deps chromium`
+
 Key Concepts
 
 - Thread: Top-level category (e.g., Fitness, Reading).

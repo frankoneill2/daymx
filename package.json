@@ -1,0 +1,20 @@
+{
+  "name": "daymx",
+  "version": "0.1.0",
+  "private": true,
+  "description": "DayMX – Daily threads review app",
+  "scripts": {
+    "start": "node server/server.js",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "test:unit": "vitest run tests/unit",
+    "test:integration": "vitest run tests/integration",
+    "test:e2e": "playwright test",
+    "test:ci": "vitest run --coverage && playwright test"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.54.2",
+    "@vitest/coverage-v8": "^2.1.9",
+    "vitest": "^2.1.9"
+  }
+}
