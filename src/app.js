@@ -1094,15 +1094,40 @@ function confirmName(promptText, initial = '') {
 }
 
 function buildTaskTagline(t, reason = '', opts = {}) {
+  const quick = opts.quickEdit || null;
   const locs = taskLocations(t);
   const dur = taskDurationMins(t);
   const includeSeries = opts.includeSeries !== false;
   const series = includeSeries ? seriesSummary(t) : null;
   const due = dueStatus(t);
-  if (!locs.length && !dur && !reason && !series && due.state === 'none') return null;
+  if (!locs.length && !dur && !reason && !series && due.state === 'none' && !(quick && quick.showEmpty)) return null;
   const line = el('div', { class: 'tagline' });
-  if (locs.length) line.append(el('span', { class: 'pill tag' }, `Loc: ${locs.join(', ')}`));
-  if (dur) line.append(el('span', { class: 'pill tag' }, `Time: ${formatDuration(dur)}`));
+  if (locs.length) {
+    if (quick && typeof quick.onLocationCycle === 'function') {
+      const b = el('button', { class: 'pill tag pill-btn', type: 'button', title: 'Click to cycle location presets' }, `Loc: ${locs.join(', ')}`);
+      b.addEventListener('click', quick.onLocationCycle);
+      line.append(b);
+    } else {
+      line.append(el('span', { class: 'pill tag' }, `Loc: ${locs.join(', ')}`));
+    }
+  } else if (quick && quick.showEmpty && typeof quick.onLocationCycle === 'function') {
+    const b = el('button', { class: 'pill tag pill-btn add', type: 'button', title: 'Click to add a location preset' }, '+Loc');
+    b.addEventListener('click', quick.onLocationCycle);
+    line.append(b);
+  }
+  if (dur) {
+    if (quick && typeof quick.onDurationCycle === 'function') {
+      const b = el('button', { class: 'pill tag pill-btn', type: 'button', title: 'Click to cycle time estimates' }, `Time: ${formatDuration(dur)}`);
+      b.addEventListener('click', quick.onDurationCycle);
+      line.append(b);
+    } else {
+      line.append(el('span', { class: 'pill tag' }, `Time: ${formatDuration(dur)}`));
+    }
+  } else if (quick && quick.showEmpty && typeof quick.onDurationCycle === 'function') {
+    const b = el('button', { class: 'pill tag pill-btn add', type: 'button', title: 'Click to set a time estimate' }, '+Time');
+    b.addEventListener('click', quick.onDurationCycle);
+    line.append(b);
+  }
   if (series) line.append(el('span', { class: 'pill tag series-pill' }, series));
   if (due.state !== 'none') {
     const cls = due.state === 'overdue' ? 'pill warn' : 'pill tag';
@@ -1112,14 +1137,50 @@ function buildTaskTagline(t, reason = '', opts = {}) {
   return line;
 }
 
-function buildReviewSeriesPanel(task) {
+function cycleTaskDuration(task, presets = DURATION_PRESETS) {
+  const base = Array.from(new Set((presets || []).map((x) => normalizeDurationValue(x)).filter(Boolean))).sort((a, b) => a - b);
+  if (!base.length) {
+    task.duration = null;
+    return null;
+  }
+  const current = taskDurationMins(task);
+  if (!current) {
+    task.duration = base[0];
+    return task.duration;
+  }
+  const order = Array.from(new Set(base.concat([current]))).sort((a, b) => a - b);
+  const idx = order.indexOf(current);
+  const next = idx >= 0 ? order[idx + 1] : base[0];
+  task.duration = next || null;
+  return task.duration;
+}
+
+function cycleTaskPresetLocation(task, presets = LOCATION_PRESETS) {
+  const list = taskLocations(task);
+  const norm = (v) => String(v || '').toLowerCase();
+  const idx = (presets || []).findIndex((preset) => list.some((loc) => norm(loc) === norm(preset)));
+  let nextList = list.slice();
+  if (idx >= 0) {
+    const active = presets[idx];
+    nextList = nextList.filter((loc) => norm(loc) !== norm(active));
+  }
+  if (idx + 1 < presets.length) nextList.unshift(presets[idx + 1]);
+  setTaskLocations(task, nextList);
+  return taskLocations(task);
+}
+
+function buildReviewSeriesPanel(task, opts = {}) {
   const stats = seriesStats(task);
   if (!stats) return null;
+  const editable = !!opts.editable;
   const panel = el('div', { class: 'review-series-panel' });
   const head = el('div', { class: 'review-series-head' });
   const pct = stats.total ? Math.round((stats.done / stats.total) * 100) : 0;
   head.append(el('strong', {}, `Project Steps • ${stats.done}/${stats.total} complete`));
-  head.append(el('span', { class: 'subtext' }, `${pct}%`));
+  const headRight = el('div', { class: 'review-series-head-meta' });
+  headRight.append(el('span', { class: 'subtext' }, `${pct}%`));
+  if (editable) headRight.append(el('span', { class: 'pill tag' }, 'Inline Edit'));
+  head.append(headRight);
 
   const progress = el('div', { class: 'review-series-progress' });
   const fill = el('div', { class: 'fill' });
@@ -1137,14 +1198,74 @@ function buildReviewSeriesPanel(task) {
   });
   ordered.forEach((s) => {
     const rank = Math.max(1, Number(s.rank) || 1);
-    const cls = `review-series-row${s.completed ? ' done' : ''}${!s.completed && rank === stats.activeRank ? ' current' : ''}`;
+    const cls = `review-series-row${editable ? ' editable' : ''}${s.completed ? ' done' : ''}${!s.completed && rank === stats.activeRank ? ' current' : ''}`;
     const row = el('div', { class: cls });
-    row.append(el('span', { class: 'pill step' }, `Step ${rank}`));
-    row.append(el('span', { class: 'review-series-text' }, s.text || 'Untitled subtask'));
-    row.append(el('span', { class: 'review-series-state' }, s.completed ? 'Done' : (rank === stats.activeRank ? 'Do Next' : 'Up Next')));
+    if (!editable) {
+      row.append(el('span', { class: 'pill step' }, `Step ${rank}`));
+      row.append(el('span', { class: 'review-series-text' }, s.text || 'Untitled subtask'));
+      row.append(el('span', { class: 'review-series-state' }, s.completed ? 'Done' : (rank === stats.activeRank ? 'Do Next' : 'Up Next')));
+      list.append(row);
+      return;
+    }
+
+    const check = el('input', { type: 'checkbox', class: 'review-series-check' });
+    check.checked = !!s.completed;
+    check.addEventListener('change', () => {
+      if (typeof opts.onToggle === 'function') opts.onToggle(s.id, check.checked);
+    });
+    const rankInput = el('input', { type: 'number', min: '1', class: 'review-series-rank-input', title: 'Step rank' });
+    rankInput.value = String(rank);
+    rankInput.addEventListener('change', () => {
+      const next = Math.max(1, Number(rankInput.value) || 1);
+      rankInput.value = String(next);
+      if (typeof opts.onRankChange === 'function') opts.onRankChange(s.id, next);
+    });
+    const textInput = el('input', { type: 'text', class: 'review-series-text-input', placeholder: 'Subtask name' });
+    textInput.value = s.text || '';
+    textInput.addEventListener('change', () => {
+      const next = textInput.value.trim();
+      if (!next) {
+        textInput.value = s.text || '';
+        return;
+      }
+      if (typeof opts.onTextChange === 'function') opts.onTextChange(s.id, next);
+    });
+    const state = el('span', { class: 'review-series-state' }, s.completed ? 'Done' : (rank === stats.activeRank ? 'Do Next' : 'Up Next'));
+    const remove = el('button', { class: 'btn ghost review-series-remove', type: 'button', title: 'Remove step' }, 'Remove');
+    remove.addEventListener('click', () => {
+      if (typeof opts.onRemove === 'function') opts.onRemove(s.id);
+    });
+    row.append(check, rankInput, textInput, state, remove);
     list.append(row);
   });
   panel.append(head, progress, list);
+  if (editable) {
+    const addRow = el('div', { class: 'review-series-add' });
+    const addText = el('input', { type: 'text', placeholder: 'Add another step…' });
+    const addRank = el('input', { type: 'number', min: '1', class: 'review-series-rank-input', title: 'Step rank' });
+    addRank.value = String(stats.activeRank || (stats.maxRank + 1));
+    const addBtn = el('button', { class: 'btn ghost', type: 'button' }, 'Add');
+    const addItem = () => {
+      const text = addText.value.trim();
+      if (!text) {
+        addText.focus();
+        return;
+      }
+      const rank = Math.max(1, Number(addRank.value) || 1);
+      if (typeof opts.onAdd === 'function') opts.onAdd(text, rank);
+      addText.value = '';
+      addText.focus();
+    };
+    addBtn.addEventListener('click', addItem);
+    addText.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') {
+        e.preventDefault();
+        addItem();
+      }
+    });
+    addRow.append(addText, addRank, addBtn);
+    panel.append(addRow);
+  }
   return panel;
 }
 
@@ -2133,6 +2254,18 @@ function renderStoryCard() {
     const done = isSeries ? (stats.remaining === 0) : !!t.completed;
     const item = el('div', { class: 'task' + (done ? ' completed' : '') });
     if (isSeries) item.classList.add('series-task');
+    const mutateReviewTask = (updater, options = {}) => {
+      const liveNode = findNodeById(store.data.threads, n.id);
+      const ti = liveNode?.tasks?.findIndex((x) => x.id === t.id) ?? -1;
+      if (ti < 0) return false;
+      updater(liveNode.tasks[ti], liveNode);
+      store.saveNow();
+      if (options.renderThreads) renderThreads();
+      renderProgress();
+      renderStoryCard();
+      if (!$('#view-tasks').hidden) renderTasksPane();
+      return true;
+    };
     const cb = el('input', { type: 'checkbox' });
     cb.checked = !!done;
     if (isSeries) {
@@ -2140,22 +2273,23 @@ function renderStoryCard() {
       cb.title = done ? 'Series complete' : 'Complete subtasks to finish series';
     } else {
       cb.addEventListener('change', () => {
-        const live = findNodeById(store.data.threads, n.id);
-        const ti = live.tasks.findIndex(x => x.id === t.id);
-        if (ti >= 0) setTaskCompleted(live.tasks[ti], cb.checked);
-        store.saveNow();
-        item.classList.toggle('completed', cb.checked);
+        mutateReviewTask((liveTask) => {
+          setTaskCompleted(liveTask, cb.checked);
+        });
       });
     }
     const main = el('div');
     const titleInput = el('input', { type: 'text', class: 'task-title-input' });
     titleInput.value = t.text;
     titleInput.addEventListener('change', () => {
-      const live = findNodeById(store.data.threads, n.id);
-      const ti = live.tasks.findIndex(x => x.id === t.id);
-      if (ti >= 0) live.tasks[ti].text = titleInput.value.trim() || live.tasks[ti].text;
-      store.saveNow();
-      renderThreads();
+      const next = titleInput.value.trim();
+      if (!next) {
+        titleInput.value = t.text;
+        return;
+      }
+      mutateReviewTask((liveTask) => {
+        liveTask.text = next;
+      }, { renderThreads: true });
     });
     main.append(titleInput);
     const btns = el('div', { class: 'meta' });
@@ -2163,16 +2297,19 @@ function renderStoryCard() {
     for (let i = 1; i <= 5; i++) pri.append(el('option', { value: String(i) }, i));
     pri.value = String(t.priority || 3);
     pri.addEventListener('change', () => {
-      const live = findNodeById(store.data.threads, n.id);
-      const ti = live.tasks.findIndex(x => x.id === t.id);
-      if (ti >= 0) { live.tasks[ti].priority = Number(pri.value); }
-      store.saveNow(); renderStoryCard(); renderProgress();
+      mutateReviewTask((liveTask) => {
+        liveTask.priority = Number(pri.value);
+      });
     });
     const delBtn = el('button', { class: 'btn ghost' }, 'Remove');
     delBtn.addEventListener('click', () => {
       const live = findNodeById(store.data.threads, n.id);
       live.tasks = live.tasks.filter(x => x.id !== t.id);
-      store.saveNow(); renderStoryCard(); renderProgress();
+      store.saveNow();
+      renderProgress();
+      renderStoryCard();
+      renderThreads();
+      if (!$('#view-tasks').hidden) renderTasksPane();
     });
     const avail = buildAvailabilityControls(n.id, t.id, () => renderStoryCard());
     avail.hidden = !isTagPanelOpen('review', t.id);
@@ -2183,10 +2320,64 @@ function renderStoryCard() {
     });
     btns.append(pri, availBtn, delBtn);
     const reason = availabilityReason(t, now, null, depMap);
-    const tagline = buildTaskTagline(t, reason);
+    const tagline = buildTaskTagline(t, reason, {
+      quickEdit: {
+        showEmpty: true,
+        onDurationCycle: () => {
+          mutateReviewTask((liveTask) => {
+            cycleTaskDuration(liveTask);
+          }, { renderThreads: true });
+        },
+        onLocationCycle: () => {
+          mutateReviewTask((liveTask) => {
+            cycleTaskPresetLocation(liveTask);
+          }, { renderThreads: true });
+        },
+      },
+    });
     if (tagline) main.append(tagline);
     if (isSeries) {
-      const panel = buildReviewSeriesPanel(t);
+      const panel = buildReviewSeriesPanel(t, {
+        editable: true,
+        onToggle: (subtaskId, completed) => {
+          mutateReviewTask((liveTask) => {
+            const subtask = (liveTask.series || []).find((s) => s.id === subtaskId);
+            if (!subtask) return;
+            setSubtaskCompleted(liveTask, subtask, completed);
+          }, { renderThreads: true });
+        },
+        onTextChange: (subtaskId, text) => {
+          mutateReviewTask((liveTask) => {
+            const subtask = (liveTask.series || []).find((s) => s.id === subtaskId);
+            if (!subtask) return;
+            subtask.text = text;
+          }, { renderThreads: true });
+        },
+        onRankChange: (subtaskId, rank) => {
+          mutateReviewTask((liveTask) => {
+            const subtask = (liveTask.series || []).find((s) => s.id === subtaskId);
+            if (!subtask) return;
+            subtask.rank = Math.max(1, Number(rank) || 1);
+            sortSeriesByRankOrder(liveTask);
+          }, { renderThreads: true });
+        },
+        onRemove: (subtaskId) => {
+          mutateReviewTask((liveTask) => {
+            liveTask.series = (liveTask.series || []).filter((s) => s.id !== subtaskId);
+            if (!liveTask.series.length) {
+              liveTask.completed = false;
+              liveTask.completedAt = null;
+            } else {
+              sortSeriesByRankOrder(liveTask);
+            }
+          }, { renderThreads: true });
+        },
+        onAdd: (text, rank) => {
+          mutateReviewTask((liveTask) => {
+            addSubtaskToTask(liveTask, text, rank);
+          }, { renderThreads: true });
+        },
+      });
       if (panel) main.append(panel);
     }
     if (!isSeries) {
@@ -3539,6 +3730,16 @@ function renderTasksPane() {
       style: `border-left:6px solid ${r?.color || 'var(--accent)'}`,
       'data-entry-key': key,
     });
+    const applyTaskCardMutation = (updater, options = {}) => {
+      updater(t);
+      store.saveNow();
+      if (options.renderThreads) renderThreads();
+      if (!$('#review-stage').hidden) {
+        renderProgress();
+        renderStoryCard();
+      }
+      renderTasksPane();
+    };
     if (ref.kind === 'series-flow') {
       item.classList.add('series-flow-card');
       if (ref.due.state === 'overdue') item.classList.add('due-overdue');
@@ -3682,7 +3883,22 @@ function renderTasksPane() {
 
       const contextLine = nodePath(n) + (ref.reason ? ` • ${ref.reason}` : '');
       const ctxEl = el('div', { class: 'ctx' }, contextLine);
-      const tagline = buildTaskTagline(t, '', { includeSeries: false });
+      const tagline = buildTaskTagline(t, '', {
+        includeSeries: false,
+        quickEdit: {
+          showEmpty: true,
+          onDurationCycle: () => {
+            applyTaskCardMutation((task) => {
+              cycleTaskDuration(task);
+            }, { renderThreads: true });
+          },
+          onLocationCycle: () => {
+            applyTaskCardMutation((task) => {
+              cycleTaskPresetLocation(task);
+            }, { renderThreads: true });
+          },
+        },
+      });
       item.append(head, progress, ctxEl, nextBlock);
       if (recentItems.length) item.append(recent);
       if (tagline) item.append(tagline);
@@ -3755,7 +3971,13 @@ function renderTasksPane() {
       if (!$('#review-stage').hidden) renderStoryCard();
       renderThreads();
     });
-    const priPill = el('span', { class: 'pill tag' }, `P${t.priority || 3}`);
+    const priPill = el('button', { class: 'pill tag pill-btn', type: 'button', title: 'Click to cycle priority' }, `P${t.priority || 3}`);
+    priPill.addEventListener('click', () => {
+      applyTaskCardMutation((task) => {
+        const cur = Number(task.priority || 3);
+        task.priority = cur >= 5 ? 1 : cur + 1;
+      }, { renderThreads: true });
+    });
     titleRow.append(priPill);
     titleRow.append(titleInput);
     main.append(titleRow);
@@ -3771,7 +3993,22 @@ function renderTasksPane() {
       const seriesLine = `Series: ${t.text} • Step ${step}/${max} • ${others} other${others === 1 ? '' : 's'} remaining`;
       main.append(el('div', { class: 'series-line' }, seriesLine));
     }
-    const tagline = buildTaskTagline(t, '', { includeSeries: !sub });
+    const tagline = buildTaskTagline(t, '', {
+      includeSeries: !sub,
+      quickEdit: {
+        showEmpty: true,
+        onDurationCycle: () => {
+          applyTaskCardMutation((task) => {
+            cycleTaskDuration(task);
+          }, { renderThreads: true });
+        },
+        onLocationCycle: () => {
+          applyTaskCardMutation((task) => {
+            cycleTaskPresetLocation(task);
+          }, { renderThreads: true });
+        },
+      },
+    });
     if (tagline) main.append(tagline);
     if (!sub && !isSeriesTask(t)) {
       const breakdown = buildBreakIntoStepsCta((stepText) => {
