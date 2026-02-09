@@ -3335,6 +3335,8 @@ function renderTasksPane() {
   const seenEstimateTasks = new Set();
   let estimateTaggedMins = 0;
   let estimateTaggedCount = 0;
+  const completedProjects = entries.filter((e) => e.kind === 'series-flow' && e.done).length;
+  const activeProjects = entries.filter((e) => e.kind === 'series-flow' && !e.done).length;
   entries.forEach((ref) => {
     if (ref.done) return;
     if (seenEstimateTasks.has(ref.task.id)) return;
@@ -3409,6 +3411,8 @@ function renderTasksPane() {
     const estimateLabel = formatDuration(estimateTaggedMins) || '0m';
     summary.append(
       metric('Matching', viewStats.total),
+      metric('Active Projects', activeProjects),
+      metric('Projects Done', completedProjects, completedProjects ? 'good' : ''),
       metric('Est. Time', estimateLabel, estimateTaggedCount ? 'good' : ''),
       metric('Ready', viewStats.ready, 'good'),
       metric('Blocked', viewStats.blocked, viewStats.blocked ? 'warn' : ''),
@@ -3747,15 +3751,26 @@ function renderTasksPane() {
       if (ref.archivedAt) item.classList.add('archived');
 
       const stats = ref.series || seriesStats(t) || { total: 0, done: 0, remaining: 0, maxRank: 0, activeRank: null, activeItems: [] };
+      const isSeriesComplete = stats.remaining === 0;
+      const completedAt = parseIsoDate(t.completedAt);
+      const orderedSeries = (t.series || []).slice().sort((a, b) => {
+        const ra = Math.max(1, Number(a.rank) || 1);
+        const rb = Math.max(1, Number(b.rank) || 1);
+        if (ra !== rb) return ra - rb;
+        const oa = Number.isFinite(a.order) ? Number(a.order) : 0;
+        const ob = Number.isFinite(b.order) ? Number(b.order) : 0;
+        return oa - ob;
+      });
       const pct = stats.total ? Math.round((stats.done / stats.total) * 100) : 0;
       const activeRank = stats.activeRank || stats.maxRank || 1;
       const currentGroup = (t.series || []).filter((s) => Math.max(1, Number(s.rank) || 1) === activeRank);
       const activeCount = (ref.activeSubtasks || []).length;
       const groupDone = currentGroup.filter((s) => !!s.completed).length;
+      if (isSeriesComplete) item.classList.add('series-flow-complete');
 
       const head = el('div', { class: 'series-flow-head' });
       const titleWrap = el('div', { class: 'series-flow-title-wrap' });
-      titleWrap.append(el('span', { class: 'series-flow-type' }, 'Project Flow'));
+      titleWrap.append(el('span', { class: 'series-flow-type' }, isSeriesComplete ? 'Project Complete' : 'Project Flow'));
       const title = el('input', { type: 'text', class: 'task-title-input series-flow-title' });
       title.value = t.text;
       title.addEventListener('change', () => {
@@ -3766,7 +3781,11 @@ function renderTasksPane() {
         renderThreads();
       });
       titleWrap.append(title);
-      const meta = el('div', { class: 'series-flow-meta' }, `Step ${activeRank}/${Math.max(1, stats.maxRank || 1)} • ${stats.done}/${stats.total} done • ${pct}%`);
+      const completeStamp = completedAt ? ` • ${completedAt.toLocaleString()}` : '';
+      const metaText = isSeriesComplete
+        ? `All ${stats.total} steps complete • ${pct}%${completeStamp}`
+        : `Step ${activeRank}/${Math.max(1, stats.maxRank || 1)} • ${stats.done}/${stats.total} done • ${pct}%`;
+      const meta = el('div', { class: 'series-flow-meta' }, metaText);
       head.append(titleWrap, meta);
 
       const progress = el('div', { class: 'series-flow-progress' });
@@ -3774,15 +3793,31 @@ function renderTasksPane() {
       fill.style.width = `${pct}%`;
       progress.append(fill);
 
-      const nextBlock = el('div', { class: 'series-do-next' });
-      const nextHead = el('div', { class: 'series-do-next-head' });
-      nextHead.append(el('span', { class: 'subtext' }, `Do Next • Step ${activeRank} (${groupDone}/${Math.max(1, currentGroup.length)} complete)`));
-      if (activeCount > 1) nextHead.append(el('span', { class: 'pill tag' }, `${activeCount} parallel`));
-      nextBlock.append(nextHead);
+      const nextBlock = el('div', { class: isSeriesComplete ? 'series-complete-block' : 'series-do-next' });
+      if (isSeriesComplete) {
+        const doneHead = el('div', { class: 'series-complete-head' });
+        doneHead.append(el('strong', {}, 'Project Completed'));
+        doneHead.append(el('span', { class: 'subtext' }, `${stats.total} steps finished`));
+        nextBlock.append(doneHead);
+      } else {
+        const nextHead = el('div', { class: 'series-do-next-head' });
+        nextHead.append(el('span', { class: 'subtext' }, `Do Next • Step ${activeRank} (${groupDone}/${Math.max(1, currentGroup.length)} complete)`));
+        if (activeCount > 1) nextHead.append(el('span', { class: 'pill tag' }, `${activeCount} parallel`));
+        nextBlock.append(nextHead);
+      }
 
       const nextList = el('div', { class: 'series-next-list' });
       const activeSubtasks = ref.activeSubtasks || [];
-      if (!activeSubtasks.length) {
+      if (isSeriesComplete) {
+        const preview = orderedSeries.slice(0, 6);
+        preview.forEach((s) => {
+          const rank = Math.max(1, Number(s.rank) || 1);
+          nextList.append(el('span', { class: 'series-completed-chip' }, `Step ${rank} • ${s.text || 'Step'} ✓`));
+        });
+        if (orderedSeries.length > preview.length) {
+          nextList.append(el('span', { class: 'series-completed-chip' }, `+${orderedSeries.length - preview.length} more`));
+        }
+      } else if (!activeSubtasks.length) {
         nextList.append(el('div', { class: 'empty' }, 'Project complete for this series.'));
       } else {
         activeSubtasks.forEach((s) => {
@@ -3812,6 +3847,7 @@ function renderTasksPane() {
               } else {
                 pendingSeriesReveal = null;
                 projectNudge = null;
+                showToast(`Project complete: ${t.text}`);
               }
             } else {
               pendingSeriesReveal = null;
@@ -3844,20 +3880,47 @@ function renderTasksPane() {
       }
 
       const actions = el('div', { class: 'meta series-actions-inline' });
-      const continueBtn = el('button', { class: 'btn primary', type: 'button' }, 'Continue Project');
-      continueBtn.addEventListener('click', () => {
-        tasksViewState.focusTaskId = t.id;
-        saveTasksViewState();
-        renderTasksPane();
-      });
-      const startBtn = el('button', { class: 'btn ghost', type: 'button' }, 'Start Next Step');
-      startBtn.addEventListener('click', () => {
-        const firstRow = nextList.querySelector('.series-next-row');
-        const firstCb = firstRow?.querySelector('input[type="checkbox"]');
-        firstCb?.focus();
-        if (firstRow && !isElementOnScreen(firstRow)) firstRow.scrollIntoView({ behavior: 'smooth', block: 'center' });
-      });
-      if (!activeSubtasks.length) startBtn.disabled = true;
+      if (!isSeriesComplete) {
+        const continueBtn = el('button', { class: 'btn primary', type: 'button' }, 'Continue Project');
+        continueBtn.addEventListener('click', () => {
+          tasksViewState.focusTaskId = t.id;
+          saveTasksViewState();
+          renderTasksPane();
+        });
+        const startBtn = el('button', { class: 'btn ghost', type: 'button' }, 'Start Next Step');
+        startBtn.addEventListener('click', () => {
+          const firstRow = nextList.querySelector('.series-next-row');
+          const firstCb = firstRow?.querySelector('input[type="checkbox"]');
+          firstCb?.focus();
+          if (firstRow && !isElementOnScreen(firstRow)) firstRow.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        });
+        if (!activeSubtasks.length) startBtn.disabled = true;
+        actions.append(continueBtn, startBtn);
+      } else {
+        const archiveNow = el('button', { class: 'btn primary', type: 'button' }, 'Archive Now');
+        archiveNow.addEventListener('click', () => {
+          applyTaskCardMutation((task) => {
+            task.archivedAt = nowIso();
+          }, { renderThreads: true });
+        });
+        const reopen = el('button', { class: 'btn ghost', type: 'button' }, 'Reopen Last Step');
+        reopen.addEventListener('click', () => {
+          applyTaskCardMutation((task) => {
+            const list = (task.series || []).slice().sort((a, b) => {
+              const ra = Math.max(1, Number(a.rank) || 1);
+              const rb = Math.max(1, Number(b.rank) || 1);
+              if (ra !== rb) return rb - ra;
+              const oa = Number.isFinite(a.order) ? Number(a.order) : 0;
+              const ob = Number.isFinite(b.order) ? Number(b.order) : 0;
+              return ob - oa;
+            });
+            const latestDone = list.find((s) => !!s.completed);
+            if (!latestDone) return;
+            setSubtaskCompleted(task, latestDone, false);
+          }, { renderThreads: true });
+        });
+        actions.append(archiveNow, reopen);
+      }
       const pri = el('select', { class: 'priority-select', title: 'Priority' });
       for (let i = 1; i <= 5; i++) pri.append(el('option', { value: String(i) }, i));
       pri.value = String(t.priority || 3);
@@ -3879,7 +3942,7 @@ function renderTasksPane() {
         renderProgress();
         if (!$('#review-stage').hidden) renderStoryCard();
       });
-      actions.append(continueBtn, startBtn, pri, availBtn, del);
+      actions.append(pri, availBtn, del);
 
       const contextLine = nodePath(n) + (ref.reason ? ` • ${ref.reason}` : '');
       const ctxEl = el('div', { class: 'ctx' }, contextLine);
@@ -3939,6 +4002,7 @@ function renderTasksPane() {
           } else {
             pendingSeriesReveal = null;
             projectNudge = null;
+            showToast(`Project complete: ${t.text}`);
           }
         } else {
           pendingSeriesReveal = null;
@@ -4074,7 +4138,8 @@ function renderTasksPane() {
     const groups = [
       { key: 'ready', label: 'Ready Now', items: entries.filter(e => !e.done && e.available) },
       { key: 'blocked', label: 'Blocked / Scheduled', items: entries.filter(e => !e.done && !e.available) },
-      { key: 'done', label: 'Completed Today', items: entries.filter(e => e.done) },
+      { key: 'done-projects', label: 'Completed Projects', items: entries.filter(e => e.done && e.kind === 'series-flow') },
+      { key: 'done', label: 'Completed Tasks', items: entries.filter(e => e.done && e.kind !== 'series-flow') },
     ];
     groups.forEach((group) => {
       if (!group.items.length) return;

@@ -925,6 +925,13 @@ input.task-title-input:focus-visible {
   padding: 12px;
 }
 
+.series-flow-card.series-flow-complete {
+  border-color: color-mix(in srgb, var(--accent-2) 58%, var(--border));
+  background:
+    linear-gradient(180deg, rgba(15, 34, 40, 0.9), rgba(10, 24, 31, 0.9)),
+    radial-gradient(90rem 26rem at 8% -10%, rgba(77, 224, 164, 0.2), transparent 62%);
+}
+
 .series-flow-head {
   display: flex;
   flex-direction: column;
@@ -950,6 +957,12 @@ input.task-title-input:focus-visible {
   font-weight: 800;
   letter-spacing: 0.08em;
   text-transform: uppercase;
+}
+
+.series-flow-card.series-flow-complete .series-flow-type {
+  border-color: color-mix(in srgb, var(--accent-2) 64%, var(--border));
+  background: color-mix(in srgb, var(--accent-2) 28%, #163346);
+  color: #e8fff4;
 }
 
 .series-flow-title {
@@ -989,6 +1002,28 @@ input.task-title-input:focus-visible {
   background: linear-gradient(180deg, rgba(12, 23, 37, 0.82), rgba(10, 19, 31, 0.82));
 }
 
+.series-complete-block {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 9px;
+  border: 1px solid color-mix(in srgb, var(--accent-2) 42%, var(--border));
+  border-radius: 10px;
+  background: linear-gradient(180deg, rgba(13, 32, 33, 0.82), rgba(10, 24, 26, 0.82));
+}
+
+.series-complete-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.series-complete-head strong {
+  color: #dffbee;
+  letter-spacing: 0.02em;
+}
+
 .series-do-next-head {
   display: flex;
   align-items: center;
@@ -1000,6 +1035,12 @@ input.task-title-input:focus-visible {
   display: flex;
   flex-direction: column;
   gap: 7px;
+}
+
+.series-flow-card.series-flow-complete .series-next-list {
+  flex-direction: row;
+  flex-wrap: wrap;
+  gap: 6px;
 }
 
 .series-next-row {
@@ -1042,6 +1083,12 @@ input.task-title-input:focus-visible {
   color: #d9f8eb;
   font-size: 11px;
   font-weight: 700;
+}
+
+.series-flow-card.series-flow-complete .series-completed-chip {
+  border-color: color-mix(in srgb, var(--accent-2) 56%, var(--border));
+  background: color-mix(in srgb, var(--accent-2) 24%, #1a3640);
+  color: #e5fff2;
 }
 
 .series-actions-inline {
@@ -1962,6 +2009,11 @@ button.pill-btn.add {
   .series-next-row .pill.step {
     grid-column: 1 / -1;
     justify-self: start;
+  }
+
+  .series-complete-head {
+    flex-direction: column;
+    align-items: flex-start;
   }
 
   .review-series-row.editable {
