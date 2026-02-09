@@ -926,10 +926,30 @@ input.task-title-input:focus-visible {
 }
 
 .series-flow-card.series-flow-complete {
+  position: relative;
+  overflow: hidden;
   border-color: color-mix(in srgb, var(--accent-2) 58%, var(--border));
+  box-shadow:
+    inset 0 0 0 1px color-mix(in srgb, var(--accent-2) 46%, transparent),
+    0 10px 22px rgba(9, 22, 25, 0.38);
   background:
-    linear-gradient(180deg, rgba(15, 34, 40, 0.9), rgba(10, 24, 31, 0.9)),
-    radial-gradient(90rem 26rem at 8% -10%, rgba(77, 224, 164, 0.2), transparent 62%);
+    linear-gradient(180deg, rgba(17, 35, 39, 0.92), rgba(11, 24, 27, 0.92)),
+    radial-gradient(90rem 26rem at 8% -10%, rgba(77, 224, 164, 0.26), transparent 62%);
+}
+
+.series-flow-card.series-flow-celebrate {
+  animation: project-complete-pop 900ms ease-out;
+}
+
+.series-flow-card.series-flow-celebrate::before {
+  content: '';
+  position: absolute;
+  inset: -1px;
+  pointer-events: none;
+  border-radius: inherit;
+  border: 1px solid color-mix(in srgb, var(--accent-2) 74%, transparent);
+  box-shadow: 0 0 0 0 rgba(77, 224, 164, 0.32);
+  animation: project-complete-ring 900ms ease-out;
 }
 
 .series-flow-head {
@@ -961,8 +981,32 @@ input.task-title-input:focus-visible {
 
 .series-flow-card.series-flow-complete .series-flow-type {
   border-color: color-mix(in srgb, var(--accent-2) 64%, var(--border));
-  background: color-mix(in srgb, var(--accent-2) 28%, #163346);
-  color: #e8fff4;
+  background: color-mix(in srgb, var(--accent-2) 36%, #163346);
+  color: #f1fff8;
+}
+
+.series-complete-badge {
+  display: inline-flex;
+  align-items: center;
+  padding: 2px 8px;
+  border-radius: 999px;
+  border: 1px solid color-mix(in srgb, var(--accent-2) 62%, var(--border));
+  background: color-mix(in srgb, var(--accent-2) 34%, #1c3a44);
+  color: #f4fff9;
+  font-size: 10px;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+}
+
+.series-flow-card.series-flow-complete .series-flow-title {
+  color: color-mix(in srgb, var(--text) 68%, #9fb7ac 32%);
+  text-decoration: line-through;
+  text-decoration-thickness: 2px;
+  text-decoration-color: color-mix(in srgb, var(--accent-2) 44%, #9fb7ac 56%);
+}
+
+.series-flow-card.series-flow-complete .series-flow-meta {
+  color: color-mix(in srgb, var(--subtext) 70%, #b8e7d3 30%);
 }
 
 .series-flow-title {
@@ -1020,7 +1064,14 @@ input.task-title-input:focus-visible {
 }
 
 .series-complete-head strong {
-  color: #dffbee;
+  color: #e8fff4;
+  font-size: 15px;
+  letter-spacing: 0.02em;
+}
+
+.series-flow-card.series-flow-complete .series-complete-head strong::before {
+  content: 'Completed ';
+  color: color-mix(in srgb, var(--accent-2) 65%, white 35%);
   letter-spacing: 0.02em;
 }
 
@@ -1089,11 +1140,28 @@ input.task-title-input:focus-visible {
   border-color: color-mix(in srgb, var(--accent-2) 56%, var(--border));
   background: color-mix(in srgb, var(--accent-2) 24%, #1a3640);
   color: #e5fff2;
+  text-decoration: line-through;
+  text-decoration-thickness: 1.5px;
+  text-decoration-color: color-mix(in srgb, var(--accent-2) 62%, #0f2217 38%);
 }
 
 .series-actions-inline {
   justify-content: flex-start;
   flex-wrap: wrap;
+}
+
+.series-flow-card.series-flow-complete .series-actions-inline .btn.primary {
+  border-color: color-mix(in srgb, var(--accent-2) 76%, var(--border));
+  background: linear-gradient(135deg, color-mix(in srgb, var(--accent-2) 84%, #0e2b2a), color-mix(in srgb, var(--accent-2) 62%, #163b34));
+}
+
+.task-section-done-projects .task-section-head h3 {
+  color: color-mix(in srgb, var(--accent-2) 72%, #d9efe7 28%);
+}
+
+.task-section-done-projects .task-section-head .pill {
+  border-color: color-mix(in srgb, var(--accent-2) 58%, var(--border));
+  background: color-mix(in srgb, var(--accent-2) 26%, #20343b);
 }
 
 .project-nudge {
@@ -1902,6 +1970,29 @@ button.pill-btn.add {
   }
   to {
     transform: translateY(0) scale(1);
+  }
+}
+
+@keyframes project-complete-pop {
+  from {
+    transform: translateY(0) scale(1);
+  }
+  35% {
+    transform: translateY(-2px) scale(1.012);
+  }
+  to {
+    transform: translateY(0) scale(1);
+  }
+}
+
+@keyframes project-complete-ring {
+  from {
+    opacity: 0.95;
+    box-shadow: 0 0 0 0 rgba(77, 224, 164, 0.34);
+  }
+  to {
+    opacity: 0;
+    box-shadow: 0 0 0 14px rgba(77, 224, 164, 0);
   }
 }
 

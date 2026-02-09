@@ -2936,6 +2936,21 @@ let tasksViewState = {
 let selectedTaskKeys = new Set();
 let pendingSeriesReveal = null;
 let projectNudge = null;
+let recentProjectCompletion = null;
+let recentProjectCompletionTimer = null;
+
+function triggerProjectCompletionCue(task) {
+  if (!task || !task.id) return;
+  recentProjectCompletion = { taskId: task.id, until: Date.now() + 2600 };
+  if (recentProjectCompletionTimer) clearTimeout(recentProjectCompletionTimer);
+  recentProjectCompletionTimer = setTimeout(() => {
+    if (!recentProjectCompletion) return;
+    if (Date.now() >= recentProjectCompletion.until) {
+      recentProjectCompletion = null;
+      if (!$('#view-tasks').hidden) renderTasksPane();
+    }
+  }, 2700);
+}
 
 function saveTasksViewState() {
   const payload = {
@@ -3752,6 +3767,7 @@ function renderTasksPane() {
 
       const stats = ref.series || seriesStats(t) || { total: 0, done: 0, remaining: 0, maxRank: 0, activeRank: null, activeItems: [] };
       const isSeriesComplete = stats.remaining === 0;
+      const celebrating = isSeriesComplete && recentProjectCompletion && recentProjectCompletion.taskId === t.id && Date.now() < recentProjectCompletion.until;
       const completedAt = parseIsoDate(t.completedAt);
       const orderedSeries = (t.series || []).slice().sort((a, b) => {
         const ra = Math.max(1, Number(a.rank) || 1);
@@ -3767,10 +3783,12 @@ function renderTasksPane() {
       const activeCount = (ref.activeSubtasks || []).length;
       const groupDone = currentGroup.filter((s) => !!s.completed).length;
       if (isSeriesComplete) item.classList.add('series-flow-complete');
+      if (celebrating) item.classList.add('series-flow-celebrate');
 
       const head = el('div', { class: 'series-flow-head' });
       const titleWrap = el('div', { class: 'series-flow-title-wrap' });
       titleWrap.append(el('span', { class: 'series-flow-type' }, isSeriesComplete ? 'Project Complete' : 'Project Flow'));
+      if (isSeriesComplete) titleWrap.append(el('span', { class: 'series-complete-badge' }, '100%'));
       const title = el('input', { type: 'text', class: 'task-title-input series-flow-title' });
       title.value = t.text;
       title.addEventListener('change', () => {
@@ -3847,6 +3865,7 @@ function renderTasksPane() {
               } else {
                 pendingSeriesReveal = null;
                 projectNudge = null;
+                triggerProjectCompletionCue(t);
                 showToast(`Project complete: ${t.text}`);
               }
             } else {
@@ -4002,6 +4021,7 @@ function renderTasksPane() {
           } else {
             pendingSeriesReveal = null;
             projectNudge = null;
+            triggerProjectCompletionCue(t);
             showToast(`Project complete: ${t.text}`);
           }
         } else {
