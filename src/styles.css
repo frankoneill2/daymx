@@ -2085,11 +2085,11 @@ button.pill-btn.add {
     justify-content: flex-start;
   }
 
-  .task {
+  .task:not(.series-flow-card) {
     grid-template-columns: 20px 1fr;
   }
 
-  .task .meta {
+  .task:not(.series-flow-card) .meta {
     grid-column: 1 / -1;
     justify-content: flex-end;
     flex-wrap: wrap;
