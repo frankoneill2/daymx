@@ -1115,12 +1115,18 @@ input.task-title-input:focus-visible {
 
 .series-next-row > .pill.step {
   grid-area: step;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .series-next-row > .series-next-text {
   grid-area: text;
   width: 100%;
   min-width: 0;
+  position: relative;
+  z-index: 1;
 }
 
 .series-next-row:focus-within {
@@ -1698,13 +1704,18 @@ input.task-title-input:focus-visible {
 
 .series-item {
   display: grid;
-  grid-template-columns: 26px 20px 64px 1fr auto;
+  grid-template-columns: 26px 20px 64px minmax(0, 1fr) auto;
   gap: 6px;
   align-items: center;
   padding: 7px;
   border: 1px solid var(--border-soft);
   border-radius: 10px;
   background: rgba(12, 23, 37, 0.76);
+}
+
+.series-item .series-text {
+  width: 100%;
+  min-width: 0;
 }
 
 .series-item.completed {
@@ -2202,11 +2213,34 @@ button.pill-btn.add {
   }
 
   .series-item {
-    grid-template-columns: 24px 20px 58px 1fr;
+    grid-template-columns: 24px 20px 58px;
+    grid-template-areas:
+      'drag check rank'
+      'text text text'
+      'remove remove remove';
+    align-items: start;
+  }
+
+  .series-item .drag-handle {
+    grid-area: drag;
+  }
+
+  .series-item > input[type='checkbox'] {
+    grid-area: check;
+  }
+
+  .series-item .series-rank {
+    grid-area: rank;
+    width: 100%;
+    min-width: 0;
+  }
+
+  .series-item .series-text {
+    grid-area: text;
   }
 
   .series-item .btn {
-    grid-column: 1 / -1;
+    grid-area: remove;
     justify-self: end;
   }
 }
