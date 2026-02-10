@@ -937,8 +937,7 @@ function setSubtaskCompleted(task, subtask, completed, now = new Date()) {
   }
   const stats = seriesStats(task);
   if (!stats) return;
-  if (stats.remaining === 0) setTaskCompleted(task, true, now);
-  else {
+  if (stats.remaining > 0) {
     task.completed = false;
     task.completedAt = null;
     task.archivedAt = null;
@@ -2964,6 +2963,7 @@ let pendingSeriesReveal = null;
 let projectNudge = null;
 let recentProjectCompletion = null;
 let recentProjectCompletionTimer = null;
+const stickyDoneTaskAnchors = new Map();
 
 function triggerProjectCompletionCue(task) {
   if (!task || !task.id) return;
@@ -3017,6 +3017,31 @@ function entryKey(ref) {
   if (ref.kind === 'subtask') return `subtask:${ref.task.id}:${ref.subtask.id}`;
   if (ref.kind === 'series' || ref.kind === 'series-flow') return `series:${ref.task.id}`;
   return `task:${ref.task.id}`;
+}
+
+function applyStickyTaskPlacement(entries) {
+  if (!Array.isArray(entries) || !entries.length || !stickyDoneTaskAnchors.size) return entries;
+  const list = entries.slice();
+  const moved = [];
+  for (let i = list.length - 1; i >= 0; i--) {
+    const ref = list[i];
+    if (!ref?.done) continue;
+    if (!stickyDoneTaskAnchors.has(ref.task.id)) continue;
+    moved.push({
+      ref,
+      anchor: Math.max(0, Number(stickyDoneTaskAnchors.get(ref.task.id)) || 0),
+      idx: i,
+    });
+    list.splice(i, 1);
+  }
+  if (!moved.length) return entries;
+  moved
+    .sort((a, b) => (a.anchor - b.anchor) || (a.idx - b.idx))
+    .forEach(({ ref, anchor }) => {
+      const insertAt = Math.max(0, Math.min(list.length, anchor));
+      list.splice(insertAt, 0, ref);
+    });
+  return list;
 }
 
 function selectionEntries() {
@@ -3334,6 +3359,10 @@ function renderTasksPane() {
   };
 
   let entries = tasksViewState.showBlocked ? enriched : enriched.filter(e => e.available || e.done);
+  for (const taskId of Array.from(stickyDoneTaskAnchors.keys())) {
+    const stillDone = entries.some((e) => e.task?.id === taskId && e.done);
+    if (!stillDone) stickyDoneTaskAnchors.delete(taskId);
+  }
   const sorters = {
     priority: (a, b) => {
       const pa = a.task.priority || 3;
@@ -3363,6 +3392,7 @@ function renderTasksPane() {
   const sortBy = ['priority', 'due', 'path'].includes(tasksViewState.sortBy) ? tasksViewState.sortBy : 'priority';
   let orderedEntries = entries.slice().sort(sorters[sortBy]);
   orderedEntries = applyPendingSeriesReveal(orderedEntries);
+  orderedEntries = applyStickyTaskPlacement(orderedEntries);
   const orderIndexByKey = new Map(orderedEntries.map((entry, idx) => [entryKey(entry), idx]));
   entries = buildSeriesDisplayEntries(orderedEntries);
   const viewStats = {
@@ -3722,6 +3752,8 @@ function renderTasksPane() {
         selectedTaskKeys.forEach((k) => {
           const ref = map.get(k);
           if (!ref) return;
+          const idx = orderIndexByKey.get(k);
+          if (typeof idx === 'number') stickyDoneTaskAnchors.set(ref.task.id, idx);
           if (ref.kind === 'subtask') setSubtaskCompleted(ref.task, ref.subtask, true);
           else setTaskCompleted(ref.task, true);
         });
@@ -3817,8 +3849,9 @@ function renderTasksPane() {
       if (ref.archivedAt) item.classList.add('archived');
 
       const stats = ref.series || seriesStats(t) || { total: 0, done: 0, remaining: 0, maxRank: 0, activeRank: null, activeItems: [] };
-      const isSeriesComplete = stats.remaining === 0;
-      const celebrating = isSeriesComplete && recentProjectCompletion && recentProjectCompletion.taskId === t.id && Date.now() < recentProjectCompletion.until;
+      const allStepsDone = stats.remaining === 0;
+      const isProjectDone = !!t.completed;
+      const celebrating = isProjectDone && recentProjectCompletion && recentProjectCompletion.taskId === t.id && Date.now() < recentProjectCompletion.until;
       const completedAt = parseIsoDate(t.completedAt);
       const orderedSeries = (t.series || []).slice().sort((a, b) => {
         const ra = Math.max(1, Number(a.rank) || 1);
@@ -3833,13 +3866,13 @@ function renderTasksPane() {
       const currentGroup = (t.series || []).filter((s) => Math.max(1, Number(s.rank) || 1) === activeRank);
       const activeCount = (ref.activeSubtasks || []).length;
       const groupDone = currentGroup.filter((s) => !!s.completed).length;
-      if (isSeriesComplete) item.classList.add('series-flow-complete');
+      if (isProjectDone) item.classList.add('series-flow-complete');
       if (celebrating) item.classList.add('series-flow-celebrate');
 
       const head = el('div', { class: 'series-flow-head' });
       const titleWrap = el('div', { class: 'series-flow-title-wrap' });
-      titleWrap.append(el('span', { class: 'series-flow-type' }, isSeriesComplete ? 'Project Complete' : 'Project Flow'));
-      if (isSeriesComplete) titleWrap.append(el('span', { class: 'series-complete-badge' }, '100%'));
+      titleWrap.append(el('span', { class: 'series-flow-type' }, isProjectDone ? 'Project Complete' : 'Project Flow'));
+      if (isProjectDone) titleWrap.append(el('span', { class: 'series-complete-badge' }, '100%'));
       const title = el('input', { type: 'text', class: 'task-title-input series-flow-title' });
       title.value = t.text;
       title.addEventListener('change', () => {
@@ -3851,9 +3884,11 @@ function renderTasksPane() {
       });
       titleWrap.append(title);
       const completeStamp = completedAt ? ` • ${completedAt.toLocaleString()}` : '';
-      const metaText = isSeriesComplete
+      const metaText = isProjectDone
         ? `All ${stats.total} steps complete • ${pct}%${completeStamp}`
-        : `Step ${activeRank}/${Math.max(1, stats.maxRank || 1)} • ${stats.done}/${stats.total} done • ${pct}%`;
+        : (allStepsDone
+          ? `All listed steps complete • ${stats.done}/${stats.total} done • Mark project done when fully complete`
+          : `Step ${activeRank}/${Math.max(1, stats.maxRank || 1)} • ${stats.done}/${stats.total} done • ${pct}%`);
       const meta = el('div', { class: 'series-flow-meta' }, metaText);
       head.append(titleWrap, meta);
 
@@ -3862,22 +3897,26 @@ function renderTasksPane() {
       fill.style.width = `${pct}%`;
       progress.append(fill);
 
-      const nextBlock = el('div', { class: isSeriesComplete ? 'series-complete-block' : 'series-do-next' });
-      if (isSeriesComplete) {
+      const nextBlock = el('div', { class: isProjectDone ? 'series-complete-block' : 'series-do-next' });
+      if (isProjectDone) {
         const doneHead = el('div', { class: 'series-complete-head' });
         doneHead.append(el('strong', {}, 'Project Completed'));
         doneHead.append(el('span', { class: 'subtext' }, `${stats.total} steps finished`));
         nextBlock.append(doneHead);
       } else {
         const nextHead = el('div', { class: 'series-do-next-head' });
-        nextHead.append(el('span', { class: 'subtext' }, `Do Next • Step ${activeRank} (${groupDone}/${Math.max(1, currentGroup.length)} complete)`));
-        if (activeCount > 1) nextHead.append(el('span', { class: 'pill tag' }, `${activeCount} parallel`));
+        if (allStepsDone) {
+          nextHead.append(el('span', { class: 'subtext' }, `All listed steps complete • ${stats.done}/${stats.total} done`));
+        } else {
+          nextHead.append(el('span', { class: 'subtext' }, `Do Next • Step ${activeRank} (${groupDone}/${Math.max(1, currentGroup.length)} complete)`));
+          if (activeCount > 1) nextHead.append(el('span', { class: 'pill tag' }, `${activeCount} parallel`));
+        }
         nextBlock.append(nextHead);
       }
 
       const nextList = el('div', { class: 'series-next-list' });
       const activeSubtasks = ref.activeSubtasks || [];
-      if (isSeriesComplete) {
+      if (isProjectDone) {
         const preview = orderedSeries.slice(0, 6);
         preview.forEach((s) => {
           const rank = Math.max(1, Number(s.rank) || 1);
@@ -3887,7 +3926,7 @@ function renderTasksPane() {
           nextList.append(el('span', { class: 'series-completed-chip' }, `+${orderedSeries.length - preview.length} more`));
         }
       } else if (!activeSubtasks.length) {
-        nextList.append(el('div', { class: 'empty' }, 'Project complete for this series.'));
+        nextList.append(el('div', { class: 'empty' }, allStepsDone ? 'All listed steps complete. Tick project done when fully finished.' : 'No active steps.'));
       } else {
         activeSubtasks.forEach((s) => {
           const rowKey = `subtask:${t.id}:${s.id}`;
@@ -3916,8 +3955,7 @@ function renderTasksPane() {
               } else {
                 pendingSeriesReveal = null;
                 projectNudge = null;
-                triggerProjectCompletionCue(t);
-                showToast(`Project complete: ${t.text}`);
+                showToast(`All listed steps done for: ${t.text}`);
               }
             } else {
               pendingSeriesReveal = null;
@@ -3950,7 +3988,7 @@ function renderTasksPane() {
       }
 
       const actions = el('div', { class: 'meta task-actions series-actions-inline' });
-      if (!isSeriesComplete) {
+      if (!isProjectDone) {
         const continueBtn = el('button', { class: 'btn primary', type: 'button' }, 'Continue Project');
         continueBtn.addEventListener('click', () => {
           tasksViewState.focusTaskId = t.id;
@@ -3965,7 +4003,22 @@ function renderTasksPane() {
           if (firstRow && !isElementOnScreen(firstRow)) firstRow.scrollIntoView({ behavior: 'smooth', block: 'center' });
         });
         if (!activeSubtasks.length) startBtn.disabled = true;
-        actions.append(continueBtn, startBtn);
+        const doneWrap = el('label', { class: 'series-project-toggle' });
+        const doneCb = el('input', { type: 'checkbox' });
+        doneCb.checked = !!t.completed;
+        doneCb.disabled = !allStepsDone;
+        doneCb.title = allStepsDone ? 'Mark this project complete' : 'Complete all listed steps before marking project complete';
+        doneCb.addEventListener('change', () => {
+          if (doneCb.checked) stickyDoneTaskAnchors.set(t.id, orderIndexByKey.get(key) ?? 0);
+          else stickyDoneTaskAnchors.delete(t.id);
+          applyTaskCardMutation((task) => {
+            const wasDone = !!task.completed;
+            setTaskCompleted(task, doneCb.checked);
+            if (!wasDone && task.completed) triggerProjectCompletionCue(task);
+          }, { renderThreads: true });
+        });
+        doneWrap.append(doneCb, document.createTextNode(' Project done'));
+        actions.append(continueBtn, startBtn, doneWrap);
       } else {
         const archiveNow = el('button', { class: 'btn primary', type: 'button' }, 'Archive Now');
         archiveNow.addEventListener('click', () => {
@@ -3989,7 +4042,17 @@ function renderTasksPane() {
             setSubtaskCompleted(task, latestDone, false);
           }, { renderThreads: true });
         });
-        actions.append(archiveNow, reopen);
+        const doneWrap = el('label', { class: 'series-project-toggle' });
+        const doneCb = el('input', { type: 'checkbox' });
+        doneCb.checked = true;
+        doneCb.addEventListener('change', () => {
+          if (!doneCb.checked) stickyDoneTaskAnchors.delete(t.id);
+          applyTaskCardMutation((task) => {
+            setTaskCompleted(task, doneCb.checked);
+          }, { renderThreads: true });
+        });
+        doneWrap.append(doneCb, document.createTextNode(' Project done'));
+        actions.append(archiveNow, reopen, doneWrap);
       }
       const pri = el('select', { class: 'priority-select', title: 'Priority' });
       for (let i = 1; i <= 5; i++) pri.append(el('option', { value: String(i) }, i));
@@ -4081,8 +4144,7 @@ function renderTasksPane() {
           } else {
             pendingSeriesReveal = null;
             projectNudge = null;
-            triggerProjectCompletionCue(t);
-            showToast(`Project complete: ${t.text}`);
+            showToast(`All listed steps done for: ${t.text}`);
           }
         } else {
           pendingSeriesReveal = null;
@@ -4093,6 +4155,8 @@ function renderTasksPane() {
     } else {
       cb.addEventListener('change', () => {
         pendingSeriesReveal = null;
+        if (cb.checked) stickyDoneTaskAnchors.set(t.id, orderIndexByKey.get(key) ?? 0);
+        else stickyDoneTaskAnchors.delete(t.id);
         setTaskCompleted(t, cb.checked);
         store.saveNow();
         renderTasksPane();
@@ -4217,11 +4281,14 @@ function renderTasksPane() {
   };
 
   if (tasksViewState.groupBy === 'status') {
-    const openItems = entries.filter(e => !e.done);
+    const isStickyDoneEntry = (entry) => !!entry?.done && stickyDoneTaskAnchors.has(entry.task?.id);
+    const openItems = entries.filter((e) => !e.done || isStickyDoneEntry(e));
+    const stickyOpenCount = openItems.filter((e) => isStickyDoneEntry(e)).length;
+    const openLabel = (tasksViewState.showBlocked || stickyOpenCount) ? 'Open Tasks' : 'Ready Now';
     const groups = [
-      { key: 'ready', label: tasksViewState.showBlocked ? 'Open Tasks' : 'Ready Now', items: openItems },
-      { key: 'done-projects', label: 'Completed Projects', items: entries.filter(e => e.done && e.kind === 'series-flow') },
-      { key: 'done', label: 'Completed Tasks', items: entries.filter(e => e.done && e.kind !== 'series-flow') },
+      { key: 'ready', label: openLabel, items: openItems },
+      { key: 'done-projects', label: 'Completed Projects', items: entries.filter((e) => e.done && e.kind === 'series-flow' && !isStickyDoneEntry(e)) },
+      { key: 'done', label: 'Completed Tasks', items: entries.filter((e) => e.done && e.kind !== 'series-flow' && !isStickyDoneEntry(e)) },
     ];
     groups.forEach((group) => {
       if (!group.items.length) return;

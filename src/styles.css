@@ -1240,6 +1240,20 @@ button.task-meta-value:hover {
   flex-wrap: wrap;
 }
 
+.series-project-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--subtext);
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.series-project-toggle input[type='checkbox'] {
+  width: 16px;
+  height: 16px;
+}
+
 .task-actions {
   justify-content: flex-start;
   align-items: center;
