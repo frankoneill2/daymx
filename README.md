@@ -1,4 +1,4 @@
-DayMX – Daily Threads (Prototype)
+FrankApp – Daily Threads (Prototype)
 
 Overview
 

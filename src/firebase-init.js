@@ -1,4 +1,4 @@
-// Firebase client initialization for DayMX (ESM via CDN)
+// Firebase client initialization for FrankApp (ESM via CDN)
 // Public single-doc mode: no sign-in required; all devices share one doc.
 // Exposes window.daymxFirebase helpers.
 

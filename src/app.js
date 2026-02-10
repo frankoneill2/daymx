@@ -1,4 +1,4 @@
-// DayMX – mobile-first SPA for daily thread reviews
+// FrankApp – mobile-first SPA for daily thread reviews
 
 // ------------------------------
 // Persistence
