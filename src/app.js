@@ -1093,16 +1093,42 @@ function confirmName(promptText, initial = '') {
   return name.trim();
 }
 
+function buildTaskMetaRow(t, opts = {}) {
+  const quick = opts.quickEdit || null;
+  const locs = taskLocations(t);
+  const dur = taskDurationMins(t);
+  const pri = Math.max(1, Number(t?.priority) || 3);
+  const row = el('div', { class: 'task-meta-row' });
+  const addItem = (label, value, onClick, cls = '') => {
+    const item = el('div', { class: `task-meta-item${cls ? ` ${cls}` : ''}` });
+    item.append(el('span', { class: 'task-meta-label' }, label));
+    if (typeof onClick === 'function') {
+      const btn = el('button', { class: 'task-meta-value', type: 'button' }, value);
+      btn.addEventListener('click', onClick);
+      item.append(btn);
+    } else {
+      item.append(el('span', { class: 'task-meta-value' }, value));
+    }
+    row.append(item);
+  };
+  addItem('Priority', `P${pri}`, quick?.onPriorityCycle, 'priority');
+  addItem('Time', dur ? formatDuration(dur) : '--', quick?.onDurationCycle, 'time');
+  addItem('Location', locs.length ? locs.join(', ') : '--', quick?.onLocationCycle, 'location');
+  return row;
+}
+
 function buildTaskTagline(t, reason = '', opts = {}) {
   const quick = opts.quickEdit || null;
+  const showLocation = opts.showLocation !== false;
+  const showDuration = opts.showDuration !== false;
   const locs = taskLocations(t);
   const dur = taskDurationMins(t);
   const includeSeries = opts.includeSeries !== false;
   const series = includeSeries ? seriesSummary(t) : null;
   const due = dueStatus(t);
-  if (!locs.length && !dur && !reason && !series && due.state === 'none' && !(quick && quick.showEmpty)) return null;
+  if ((!showLocation || !locs.length) && (!showDuration || !dur) && !reason && !series && due.state === 'none' && !(quick && quick.showEmpty && (showLocation || showDuration))) return null;
   const line = el('div', { class: 'tagline' });
-  if (locs.length) {
+  if (showLocation && locs.length) {
     if (quick && typeof quick.onLocationCycle === 'function') {
       const b = el('button', { class: 'pill tag pill-btn', type: 'button', title: 'Click to cycle location presets' }, `Loc: ${locs.join(', ')}`);
       b.addEventListener('click', quick.onLocationCycle);
@@ -1110,12 +1136,12 @@ function buildTaskTagline(t, reason = '', opts = {}) {
     } else {
       line.append(el('span', { class: 'pill tag' }, `Loc: ${locs.join(', ')}`));
     }
-  } else if (quick && quick.showEmpty && typeof quick.onLocationCycle === 'function') {
+  } else if (showLocation && quick && quick.showEmpty && typeof quick.onLocationCycle === 'function') {
     const b = el('button', { class: 'pill tag pill-btn add', type: 'button', title: 'Click to add a location preset' }, '+Loc');
     b.addEventListener('click', quick.onLocationCycle);
     line.append(b);
   }
-  if (dur) {
+  if (showDuration && dur) {
     if (quick && typeof quick.onDurationCycle === 'function') {
       const b = el('button', { class: 'pill tag pill-btn', type: 'button', title: 'Click to cycle time estimates' }, `Time: ${formatDuration(dur)}`);
       b.addEventListener('click', quick.onDurationCycle);
@@ -1123,7 +1149,7 @@ function buildTaskTagline(t, reason = '', opts = {}) {
     } else {
       line.append(el('span', { class: 'pill tag' }, `Time: ${formatDuration(dur)}`));
     }
-  } else if (quick && quick.showEmpty && typeof quick.onDurationCycle === 'function') {
+  } else if (showDuration && quick && quick.showEmpty && typeof quick.onDurationCycle === 'function') {
     const b = el('button', { class: 'pill tag pill-btn add', type: 'button', title: 'Click to set a time estimate' }, '+Time');
     b.addEventListener('click', quick.onDurationCycle);
     line.append(b);
@@ -3384,7 +3410,7 @@ function renderTasksPane() {
       return card;
     };
 
-    const summary = el('div', { class: 'tasks-summary' });
+    const statusPanel = el('section', { class: 'tasks-status-panel' });
     const scorePanel = el('div', { class: `points-panel${score.points >= score.goal ? ' complete' : ''}` });
     const scoreHead = el('div', { class: 'points-head' });
     scoreHead.append(
@@ -3400,7 +3426,7 @@ function renderTasksPane() {
     scoreFill.style.width = `${score.pct}%`;
     scoreBar.append(scoreFill);
     scorePanel.append(scoreHead, scoreSub, scoreBar);
-    controls.append(scorePanel);
+    statusPanel.append(scorePanel);
 
     if (projectNudge && projectNudge.taskId) {
       const nudge = el('div', { class: 'project-nudge' });
@@ -3420,11 +3446,12 @@ function renderTasksPane() {
       });
       row.append(cont, later);
       nudge.append(text, row);
-      controls.append(nudge);
+      statusPanel.append(nudge);
     }
 
     const estimateLabel = formatDuration(estimateTaggedMins) || '0m';
-    summary.append(
+    const metricsSummary = el('div', { class: 'tasks-summary' });
+    metricsSummary.append(
       metric('Matching', viewStats.total),
       metric('Active Projects', activeProjects),
       metric('Projects Done', completedProjects, completedProjects ? 'good' : ''),
@@ -3434,7 +3461,70 @@ function renderTasksPane() {
       metric('Urgent', viewStats.urgent, viewStats.urgent ? 'warn' : ''),
       metric('Done', viewStats.done),
     );
-    controls.append(summary);
+    statusPanel.append(metricsSummary);
+    controls.append(statusPanel);
+
+    const filterPanel = el('section', { class: 'tasks-filter-panel' });
+    const primaryFilters = el('div', { class: 'tasks-primary-filters' });
+
+    const searchRow = el('div', { class: 'filter-row' });
+    const searchInput = el('input', { type: 'search', placeholder: 'Search within tasks...' });
+    searchInput.value = tasksViewState.searchText || '';
+    searchInput.addEventListener('input', () => {
+      tasksViewState.searchText = searchInput.value;
+      saveTasksViewState();
+      renderTasksPane();
+    });
+    searchRow.append(searchInput);
+    primaryFilters.append(buildGroup('Search', searchRow));
+
+    const locRow = el('div', { class: 'filter-row' });
+    const activeLocs = uniqTags(tasksViewState.locationTags || []);
+    const activeLocSet = new Set(activeLocs.map(l => l.toLowerCase()));
+    const locAny = el('button', { class: `chip toggle${activeLocs.length ? '' : ' active'}` }, 'Any');
+    locAny.addEventListener('click', () => {
+      tasksViewState.locationTags = [];
+      saveTasksViewState();
+      renderTasksPane();
+    });
+    locRow.append(locAny);
+    for (const loc of allLocations()) {
+      const active = activeLocSet.has(loc.toLowerCase());
+      const btn = el('button', { class: `chip toggle${active ? ' active' : ''}` }, loc);
+      btn.addEventListener('click', () => {
+        const next = uniqTags(activeLocs);
+        const idx = next.findIndex(x => x.toLowerCase() === loc.toLowerCase());
+        if (idx >= 0) next.splice(idx, 1);
+        else next.push(loc);
+        tasksViewState.locationTags = next;
+        saveTasksViewState();
+        renderTasksPane();
+      });
+      locRow.append(btn);
+    }
+    primaryFilters.append(buildGroup('Location', locRow));
+
+    const timeRow = el('div', { class: 'filter-row' });
+    const currentMax = normalizeDurationValue(tasksViewState.durationMax);
+    const timeAny = el('button', { class: `chip toggle${currentMax ? '' : ' active'}` }, 'Any');
+    timeAny.addEventListener('click', () => {
+      tasksViewState.durationMax = null;
+      saveTasksViewState();
+      renderTasksPane();
+    });
+    timeRow.append(timeAny);
+    for (const mins of allDurations()) {
+      const active = currentMax === mins;
+      const btn = el('button', { class: `chip toggle${active ? ' active' : ''}` }, formatDuration(mins) || `${mins}m`);
+      btn.addEventListener('click', () => {
+        tasksViewState.durationMax = active ? null : mins;
+        saveTasksViewState();
+        renderTasksPane();
+      });
+      timeRow.append(btn);
+    }
+    primaryFilters.append(buildGroup('Time ≤', timeRow));
+    filterPanel.append(primaryFilters);
 
     const activeWrap = el('div', { class: 'filter-row active-filters' });
     let activeCount = 0;
@@ -3486,19 +3576,24 @@ function renderTasksPane() {
       });
       const row = el('div', { class: 'filter-row' });
       row.append(activeWrap, reset);
-      controls.append(buildGroup('Active Filters', row));
+      filterPanel.append(buildGroup('Active Filters', row));
     }
 
-    const searchRow = el('div', { class: 'filter-row' });
-    const searchInput = el('input', { type: 'search', placeholder: 'Search within tasks...' });
-    searchInput.value = tasksViewState.searchText || '';
-    searchInput.addEventListener('input', () => {
-      tasksViewState.searchText = searchInput.value;
-      saveTasksViewState();
-      renderTasksPane();
-    });
-    searchRow.append(searchInput);
-    controls.append(buildGroup('Search', searchRow));
+    const hasAdvancedFilters = !!ctx
+      || !!(tasksViewState.priorityValues || []).length
+      || !!tasksViewState.showBlocked
+      || !!tasksViewState.showArchived
+      || tasksViewState.sortBy !== 'priority'
+      || tasksViewState.groupBy !== 'status'
+      || !!tasksViewState.compactMode
+      || !!tasksViewState.selectionMode;
+
+    const moreFilters = el('details', { class: 'tasks-more-filters' });
+    if (hasAdvancedFilters) moreFilters.open = true;
+    const moreLabel = hasAdvancedFilters ? 'More filters (active)' : 'More filters';
+    const moreSummary = el('summary', {}, moreLabel);
+    const moreBody = el('div', { class: 'tasks-more-filters-body' });
+    moreFilters.append(moreSummary, moreBody);
 
     const ctxs = allContexts();
     if (ctxs.length) {
@@ -3513,55 +3608,8 @@ function renderTasksPane() {
         renderTasksPane();
       });
       ctxRow.append(sel);
-      controls.append(buildGroup('Context', ctxRow));
+      moreBody.append(buildGroup('Context', ctxRow));
     }
-
-    const locRow = el('div', { class: 'filter-row' });
-    const activeLocs = uniqTags(tasksViewState.locationTags || []);
-    const locSet = new Set(activeLocs.map(l => l.toLowerCase()));
-    const locAny = el('button', { class: `chip toggle${activeLocs.length ? '' : ' active'}` }, 'Any');
-    locAny.addEventListener('click', () => {
-      tasksViewState.locationTags = [];
-      saveTasksViewState();
-      renderTasksPane();
-    });
-    locRow.append(locAny);
-    for (const loc of allLocations()) {
-      const active = locSet.has(loc.toLowerCase());
-      const btn = el('button', { class: `chip toggle${active ? ' active' : ''}` }, loc);
-      btn.addEventListener('click', () => {
-        const next = uniqTags(activeLocs);
-        const idx = next.findIndex(x => x.toLowerCase() === loc.toLowerCase());
-        if (idx >= 0) next.splice(idx, 1);
-        else next.push(loc);
-        tasksViewState.locationTags = next;
-        saveTasksViewState();
-        renderTasksPane();
-      });
-      locRow.append(btn);
-    }
-    controls.append(buildGroup('Location', locRow));
-
-    const timeRow = el('div', { class: 'filter-row' });
-    const currentMax = normalizeDurationValue(tasksViewState.durationMax);
-    const timeAny = el('button', { class: `chip toggle${currentMax ? '' : ' active'}` }, 'Any');
-    timeAny.addEventListener('click', () => {
-      tasksViewState.durationMax = null;
-      saveTasksViewState();
-      renderTasksPane();
-    });
-    timeRow.append(timeAny);
-    for (const mins of allDurations()) {
-      const active = currentMax === mins;
-      const btn = el('button', { class: `chip toggle${active ? ' active' : ''}` }, formatDuration(mins) || `${mins}m`);
-      btn.addEventListener('click', () => {
-        tasksViewState.durationMax = active ? null : mins;
-        saveTasksViewState();
-        renderTasksPane();
-      });
-      timeRow.append(btn);
-    }
-    controls.append(buildGroup('Time ≤', timeRow));
 
     const priRow = el('div', { class: 'filter-row' });
     const activePriorities = normalizePriorityList(tasksViewState.priorityValues || []);
@@ -3587,7 +3635,7 @@ function renderTasksPane() {
       });
       priRow.append(btn);
     });
-    controls.append(buildGroup('Priority', priRow));
+    moreBody.append(buildGroup('Priority', priRow));
 
     const sortRow = el('div', { class: 'filter-row' });
     const mkSort = (key, label) => {
@@ -3601,7 +3649,7 @@ function renderTasksPane() {
       return btn;
     };
     sortRow.append(mkSort('priority', 'Priority'), mkSort('due', 'Due'), mkSort('path', 'Path'));
-    controls.append(buildGroup('Sort', sortRow));
+    moreBody.append(buildGroup('Sort', sortRow));
 
     const displayRow = el('div', { class: 'filter-row' });
     const grouped = el('button', { class: `chip toggle${tasksViewState.groupBy === 'status' ? ' active' : ''}`, type: 'button' }, 'Grouped');
@@ -3623,7 +3671,7 @@ function renderTasksPane() {
       renderTasksPane();
     });
     displayRow.append(grouped, flat, compact);
-    controls.append(buildGroup('Display', displayRow));
+    moreBody.append(buildGroup('Display', displayRow));
 
     const optRow = el('div', { class: 'filter-row' });
     const showLbl = el('label', { class: 'filter-toggle' });
@@ -3656,7 +3704,7 @@ function renderTasksPane() {
     optRow.append(el('span', { class: 'subtext' }, 'Archive after'));
     optRow.append(archiveDays);
     optRow.append(el('span', { class: 'subtext' }, 'days'));
-    controls.append(buildGroup('Options', optRow));
+    moreBody.append(buildGroup('Options', optRow));
 
     const bulkRow = el('div', { class: 'filter-row' });
     const selectModeBtn = el('button', { class: `btn ghost${tasksViewState.selectionMode ? ' active' : ''}` }, tasksViewState.selectionMode ? 'Exit Select' : 'Select');
@@ -3731,7 +3779,10 @@ function renderTasksPane() {
       });
       bulkRow.append(doneBtn, priSel, priBtn, locInput, locBtn, delBtn);
     }
-    controls.append(buildGroup('Selection', bulkRow));
+    moreBody.append(buildGroup('Selection', bulkRow));
+
+    filterPanel.append(moreFilters);
+    controls.append(filterPanel);
   }
   if (!entries.length) {
     const msg = stats.total ? 'No tasks in the current view.' : 'No tasks match the current filters.';
@@ -3898,7 +3949,7 @@ function renderTasksPane() {
         });
       }
 
-      const actions = el('div', { class: 'meta series-actions-inline' });
+      const actions = el('div', { class: 'meta task-actions series-actions-inline' });
       if (!isSeriesComplete) {
         const continueBtn = el('button', { class: 'btn primary', type: 'button' }, 'Continue Project');
         continueBtn.addEventListener('click', () => {
@@ -3951,7 +4002,7 @@ function renderTasksPane() {
         avail.hidden = !avail.hidden;
         setTagPanelOpen('tasks', t.id, !avail.hidden);
       });
-      const del = el('button', { class: 'btn ghost' }, 'Remove');
+      const del = el('button', { class: 'btn ghost danger' }, 'Remove');
       del.addEventListener('click', () => {
         n.tasks = n.tasks.filter((x) => x.id !== t.id);
         if (tasksViewState.focusTaskId === t.id) tasksViewState.focusTaskId = null;
@@ -3965,10 +4016,14 @@ function renderTasksPane() {
 
       const contextLine = nodePath(n) + (ref.reason ? ` • ${ref.reason}` : '');
       const ctxEl = el('div', { class: 'ctx' }, contextLine);
-      const tagline = buildTaskTagline(t, '', {
-        includeSeries: false,
+      const metaRow = buildTaskMetaRow(t, {
         quickEdit: {
-          showEmpty: true,
+          onPriorityCycle: () => {
+            applyTaskCardMutation((task) => {
+              const cur = Number(task.priority || 3);
+              task.priority = cur >= 5 ? 1 : cur + 1;
+            }, { renderThreads: true });
+          },
           onDurationCycle: () => {
             applyTaskCardMutation((task) => {
               cycleTaskDuration(task);
@@ -3981,7 +4036,12 @@ function renderTasksPane() {
           },
         },
       });
-      item.append(head, progress, ctxEl, nextBlock);
+      const tagline = buildTaskTagline(t, '', {
+        includeSeries: false,
+        showLocation: false,
+        showDuration: false,
+      });
+      item.append(head, progress, ctxEl, metaRow, nextBlock);
       if (recentItems.length) item.append(recent);
       if (tagline) item.append(tagline);
       item.append(actions, avail);
@@ -4055,18 +4115,31 @@ function renderTasksPane() {
       if (!$('#review-stage').hidden) renderStoryCard();
       renderThreads();
     });
-    const priPill = el('button', { class: 'pill tag pill-btn', type: 'button', title: 'Click to cycle priority' }, `P${t.priority || 3}`);
-    priPill.addEventListener('click', () => {
-      applyTaskCardMutation((task) => {
-        const cur = Number(task.priority || 3);
-        task.priority = cur >= 5 ? 1 : cur + 1;
-      }, { renderThreads: true });
-    });
-    titleRow.append(priPill);
     titleRow.append(titleInput);
     main.append(titleRow);
     const ctxLine = nodePath(n) + (ref.reason ? ` • ${ref.reason}` : '');
     main.append(el('div', { class: 'ctx' }, ctxLine));
+    const metaRow = buildTaskMetaRow(t, {
+      quickEdit: {
+        onPriorityCycle: () => {
+          applyTaskCardMutation((task) => {
+            const cur = Number(task.priority || 3);
+            task.priority = cur >= 5 ? 1 : cur + 1;
+          }, { renderThreads: true });
+        },
+        onDurationCycle: () => {
+          applyTaskCardMutation((task) => {
+            cycleTaskDuration(task);
+          }, { renderThreads: true });
+        },
+        onLocationCycle: () => {
+          applyTaskCardMutation((task) => {
+            cycleTaskPresetLocation(task);
+          }, { renderThreads: true });
+        },
+      },
+    });
+    main.append(metaRow);
     if (sub) {
       item.classList.add('subtask');
       const stats = ref.series || seriesStats(t);
@@ -4079,19 +4152,8 @@ function renderTasksPane() {
     }
     const tagline = buildTaskTagline(t, '', {
       includeSeries: !sub,
-      quickEdit: {
-        showEmpty: true,
-        onDurationCycle: () => {
-          applyTaskCardMutation((task) => {
-            cycleTaskDuration(task);
-          }, { renderThreads: true });
-        },
-        onLocationCycle: () => {
-          applyTaskCardMutation((task) => {
-            cycleTaskPresetLocation(task);
-          }, { renderThreads: true });
-        },
-      },
+      showLocation: false,
+      showDuration: false,
     });
     if (tagline) main.append(tagline);
     if (!sub && !isSeriesTask(t)) {
@@ -4110,12 +4172,12 @@ function renderTasksPane() {
       });
       main.append(breakdown);
     }
-    const actions = el('div', { class: 'meta' });
+    const actions = el('div', { class: 'meta task-actions' });
     const pri = el('select', { class: 'priority-select', title: 'Priority' });
     for (let i = 1; i <= 5; i++) pri.append(el('option', { value: String(i) }, i));
     pri.value = String(t.priority || 3);
     pri.addEventListener('change', () => { t.priority = Number(pri.value); store.saveNow(); renderTasksPane(); });
-    const del = el('button', { class: 'btn ghost' }, 'Remove');
+    const del = el('button', { class: 'btn ghost danger' }, 'Remove');
     del.addEventListener('click', () => {
       if (sub) {
         t.series = (t.series || []).filter(x => x.id !== sub.id);
@@ -4155,9 +4217,9 @@ function renderTasksPane() {
   };
 
   if (tasksViewState.groupBy === 'status') {
+    const openItems = entries.filter(e => !e.done);
     const groups = [
-      { key: 'ready', label: 'Ready Now', items: entries.filter(e => !e.done && e.available) },
-      { key: 'blocked', label: 'Blocked / Scheduled', items: entries.filter(e => !e.done && !e.available) },
+      { key: 'ready', label: tasksViewState.showBlocked ? 'Open Tasks' : 'Ready Now', items: openItems },
       { key: 'done-projects', label: 'Completed Projects', items: entries.filter(e => e.done && e.kind === 'series-flow') },
       { key: 'done', label: 'Completed Tasks', items: entries.filter(e => e.done && e.kind !== 'series-flow') },
     ];
