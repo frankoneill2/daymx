@@ -2126,15 +2126,27 @@ button.pill-btn.add {
   }
 
   .series-next-row {
-    grid-template-columns: 20px minmax(0, 1fr);
-    grid-template-areas:
-      'check step'
-      'text text';
-    align-items: start;
+    display: block;
+    align-items: initial;
+  }
+
+  .series-next-row > input[type='checkbox'] {
+    display: inline-block;
+    vertical-align: middle;
+    margin-right: 6px;
   }
 
   .series-next-row .pill.step {
+    display: inline-flex;
+    vertical-align: middle;
     justify-self: start;
+    max-width: calc(100% - 36px);
+  }
+
+  .series-next-row > .series-next-text {
+    display: block;
+    width: 100%;
+    margin-top: 6px;
   }
 
   .series-complete-head {
