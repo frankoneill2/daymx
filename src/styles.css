@@ -1013,6 +1013,8 @@ input.task-title-input:focus-visible {
   font-family: 'Space Grotesk', 'Manrope', sans-serif;
   font-weight: 700;
   font-size: 16px;
+  width: 100%;
+  min-width: 0;
 }
 
 .series-flow-meta {
@@ -1097,6 +1099,7 @@ input.task-title-input:focus-visible {
 .series-next-row {
   display: grid;
   grid-template-columns: 20px auto minmax(0, 1fr);
+  grid-template-areas: 'check step text';
   gap: 7px;
   align-items: center;
   padding: 7px;
@@ -1104,6 +1107,20 @@ input.task-title-input:focus-visible {
   border-radius: 10px;
   background: rgba(14, 26, 42, 0.72);
   transition: border-color 140ms ease, box-shadow 140ms ease, transform 140ms ease;
+}
+
+.series-next-row > input[type='checkbox'] {
+  grid-area: check;
+}
+
+.series-next-row > .pill.step {
+  grid-area: step;
+}
+
+.series-next-row > .series-next-text {
+  grid-area: text;
+  width: 100%;
+  min-width: 0;
 }
 
 .series-next-row:focus-within {
@@ -1134,6 +1151,10 @@ input.task-title-input:focus-visible {
   color: #d9f8eb;
   font-size: 11px;
   font-weight: 700;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .series-flow-card.series-flow-complete .series-completed-chip {
@@ -2095,10 +2116,13 @@ button.pill-btn.add {
 
   .series-next-row {
     grid-template-columns: 20px minmax(0, 1fr);
+    grid-template-areas:
+      'check step'
+      'text text';
+    align-items: start;
   }
 
   .series-next-row .pill.step {
-    grid-column: 1 / -1;
     justify-self: start;
   }
 

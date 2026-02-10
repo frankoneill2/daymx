@@ -3874,7 +3874,7 @@ function renderTasksPane() {
             store.saveNow();
             renderTasksPane();
           });
-          const text = el('input', { type: 'text', class: 'task-title-input' });
+          const text = el('input', { type: 'text', class: 'task-title-input series-next-text' });
           text.value = s.text || '';
           text.addEventListener('change', () => {
             const v = text.value.trim();
