@@ -1241,6 +1241,47 @@ function confirmName(promptText, initial = '') {
   return name.trim();
 }
 
+function createInlineIconAction(title, onClick, symbol = '✕', cls = '') {
+  const btn = el('button', {
+    class: `icon-btn row-action${cls ? ` ${cls}` : ''}`,
+    type: 'button',
+    title,
+    'aria-label': title,
+  }, symbol);
+  btn.addEventListener('click', onClick);
+  return btn;
+}
+
+function taskStatusMeta(task, opts = {}) {
+  const now = opts.now || new Date();
+  const ctx = opts.currentContext || null;
+  const depMap = opts.depMap || null;
+  const done = opts.done != null ? !!opts.done : !!task?.completed;
+  if (done) return { label: 'Completed', tone: 'done' };
+  if (task?.waitingOn && String(task.waitingOn).trim()) return { label: 'Blocked', tone: 'blocked' };
+  if (unresolvedDependencyIds(task, depMap).length) return { label: 'Blocked', tone: 'blocked' };
+  if (task?.availableAt) {
+    const at = parseIsoDate(task.availableAt);
+    if (at && now < at) return { label: 'Scheduled', tone: 'scheduled' };
+  }
+  if (Array.isArray(task?.contexts) && task.contexts.length && (!ctx || !task.contexts.includes(ctx))) {
+    return { label: 'Context', tone: 'context' };
+  }
+  const due = dueStatus(task, now);
+  if (due.state === 'overdue') return { label: 'Overdue', tone: 'blocked' };
+  if (due.state === 'soon') return { label: 'Due Soon', tone: 'scheduled' };
+  return { label: 'Ready', tone: 'ready' };
+}
+
+function buildTaskStateBadges(task, opts = {}) {
+  const pri = clampPriority(task?.priority, 3);
+  const status = taskStatusMeta(task, opts);
+  const row = el('div', { class: 'task-state-row' });
+  row.append(el('span', { class: 'pill task-state-chip priority' }, `P${pri}`));
+  row.append(el('span', { class: `pill task-state-chip ${status.tone}` }, status.label));
+  return row;
+}
+
 function buildTaskMetaRow(t, opts = {}) {
   const quick = opts.quickEdit || null;
   const locs = taskLocations(t);
@@ -1916,10 +1957,19 @@ function buildAvailabilityControls(nodeId, taskId, rerender) {
 // ------------------------------
 // Preparation view
 // ------------------------------
+function refreshPreparePrimaryAction() {
+  const btn = $('#btn-add-thread');
+  if (!btn) return;
+  const hasThreads = Array.isArray(store.data?.threads) && store.data.threads.length > 0;
+  btn.classList.toggle('primary', !hasThreads);
+  btn.classList.toggle('ghost', hasThreads);
+}
+
 function renderThreads() {
   const root = $('#threads-root');
   root.innerHTML = '';
   const depMap = allTaskRefMap();
+  refreshPreparePrimaryAction();
   if (!store.data.threads.length) {
     root.append(el('div', { class: 'empty' }, 'No threads yet. Add one to begin.'));
     refreshQuickCaptureTargets();
@@ -1997,46 +2047,55 @@ function renderNode(node, depMap = null) {
     renderThreads();
   });
 
-  const btnQuestions = el('button', { class: 'btn ghost' }, 'Questions');
-  btnQuestions.addEventListener('click', () => openQuestionsModal(node.id));
-
-  const btnTasks = el('button', { class: 'btn ghost' }, 'Tasks');
-  btnTasks.addEventListener('click', () => openTasksModal(node.id));
-  const moveUp = el('button', { class: 'btn ghost', title: 'Move up' }, '↑');
-  moveUp.addEventListener('click', ()=>{ moveNode(node.id, -1); });
-  const moveDown = el('button', { class: 'btn ghost', title: 'Move down' }, '↓');
-  moveDown.addEventListener('click', ()=>{ moveNode(node.id, +1); });
   const enabledToggle = el('label', { class: 'subtext' });
   const en = el('input', { type: 'checkbox' }); en.checked = node.enabled !== false; en.addEventListener('change', ()=>{ node.enabled = en.checked; store.save(); renderThreads(); });
   enabledToggle.append(en, document.createTextNode(' Enabled'));
 
-  actions.append(dragHandle, moveUp, moveDown, btnAddChild, btnQuestions, btnTasks, enabledToggle);
+  const more = el('details', { class: 'node-menu' });
+  const moreTrigger = el('summary', { class: 'node-menu-trigger', title: 'More actions', 'aria-label': 'More actions' }, '⋯');
+  const morePanel = el('div', { class: 'node-menu-panel' });
+  const closeMore = () => { more.removeAttribute('open'); };
+  const wireMenuAction = (button, handler) => {
+    button.addEventListener('click', () => {
+      handler();
+      closeMore();
+    });
+    return button;
+  };
+  morePanel.append(
+    wireMenuAction(el('button', { class: 'btn ghost', type: 'button' }, 'Questions'), () => openQuestionsModal(node.id)),
+    wireMenuAction(el('button', { class: 'btn ghost', type: 'button' }, 'Tasks'), () => openTasksModal(node.id)),
+    wireMenuAction(el('button', { class: 'btn ghost', type: 'button' }, 'Move Up'), () => moveNode(node.id, -1)),
+    wireMenuAction(el('button', { class: 'btn ghost', type: 'button' }, 'Move Down'), () => moveNode(node.id, +1))
+  );
+  more.append(moreTrigger, morePanel);
+
+  actions.append(dragHandle, btnAddChild, enabledToggle, more);
   header.append(titleWrap, actions);
   container.append(header);
 
   const footer = el('div', { class: 'kv' });
-  const meta = el('div', { class: 'subtext' }, `${node.children.length} sub, ${node.questions.length} q, ${node.tasks.length} tasks`);
+  const meta = el('div', { class: 'subtext node-meta' }, `${node.children.length} sub, ${node.questions.length} q, ${node.tasks.length} tasks`);
   footer.append(meta, el('div'));
   container.append(footer);
   container.classList.toggle('disabled', node.enabled === false);
 
   // Inline Questions (Prepare)
   const qSection = el('div', { class: 'story-section' });
-  qSection.append(el('div', { class: 'subtext' }, 'Questions'));
+  qSection.append(el('div', { class: 'subtext section-kicker' }, 'Questions'));
   const qList = el('div', { class: 'inline-list' });
   if (!node.questions.length) qList.append(el('div', { class: 'empty' }, 'No questions yet.'));
   node.questions.forEach((q) => {
-    const row = el('div', { class: 'inline-item' });
+    const row = el('div', { class: 'inline-item question-inline-row' });
     const top = el('div', { class: 'kv' });
     const label = el('input', { type: 'text', class: 'task-title-input' });
     label.value = q.text;
     label.addEventListener('change', () => { q.text = label.value.trim() || q.text; store.save(); });
-    const actions = el('div');
-    const del = el('button', { class: 'btn ghost' }, 'Remove');
-    del.addEventListener('click', () => {
+    const actions = el('div', { class: 'row-actions' });
+    const del = createInlineIconAction('Remove question', () => {
       node.questions = node.questions.filter(x => x.id !== q.id);
       store.save(); renderThreads();
-    });
+    }, '✕', 'danger');
     actions.append(del);
     top.append(label, actions);
     row.append(top);
@@ -2056,18 +2115,18 @@ function renderNode(node, depMap = null) {
 
   // Inline Tasks (Prepare)
   const tSection = el('div', { class: 'story-section' });
-  tSection.append(el('div', { class: 'subtext' }, 'Tasks'));
+  tSection.append(el('div', { class: 'subtext section-kicker' }, 'Tasks'));
   const tList = el('div', { class: 'inline-list' });
   const now = new Date();
   const movingEntries = movingTaskEntries('prepare', node.id);
   if (!node.tasks.length && !movingEntries.length) tList.append(el('div', { class: 'empty' }, 'No tasks yet.'));
   node.tasks.forEach((t) => {
-    const row = el('div', { class: 'inline-item', 'data-task-id': t.id });
-    const top = el('div', { class: 'kv' });
+    const row = el('div', { class: 'inline-item task-inline-row', 'data-task-id': t.id });
+    const top = el('div', { class: 'kv task-inline-top' });
     const label = el('input', { type: 'text', class: 'task-title-input' });
     label.value = t.text;
     label.addEventListener('change', () => { t.text = label.value.trim() || t.text; store.saveNow(); });
-    const actions = el('div', { class: 'meta' });
+    const actions = el('div', { class: 'meta task-inline-actions' });
     const taskDrag = el('button', { class: 'drag-handle', title: 'Drag to reorder', draggable: 'true', type: 'button' }, '⋮⋮');
     taskDrag.addEventListener('dragstart', (e) => {
       setDragState({ kind: 'task', sourceNodeId: node.id, sourceTaskId: t.id, sourceParentId: node.id });
@@ -2112,25 +2171,25 @@ function renderNode(node, depMap = null) {
       if (!$('#view-review').hidden) onReviewVisibility();
       if (!$('#view-tasks').hidden) renderTasksPane();
     });
-    const del = el('button', { class: 'btn ghost' }, 'Remove');
-    del.addEventListener('click', () => {
+    const del = createInlineIconAction('Remove task', () => {
       node.tasks = node.tasks.filter(x => x.id !== t.id);
       store.save(); renderThreads();
-    });
+    }, '✕', 'danger');
     const avail = buildAvailabilityControls(node.id, t.id, () => renderThreads());
     avail.hidden = !isTagPanelOpen('prepare', t.id);
-    const availBtn = el('button', { class: 'btn ghost' }, 'Tags');
+    const availBtn = el('button', { class: 'btn ghost btn-lite' }, 'Tags');
     availBtn.addEventListener('click', () => {
       avail.hidden = !avail.hidden;
       setTagPanelOpen('prepare', t.id, !avail.hidden);
     });
     actions.append(taskDrag, pri, threadSel, availBtn, del);
     top.append(label, actions);
+    const badges = buildTaskStateBadges(t, { now, depMap });
     // status tint
     if (t.completed) row.classList.add('status-completed');
     else if (isTaskAvailable(t, now, null, depMap)) row.classList.add('status-available');
     else row.classList.add('status-blocked');
-    row.append(top);
+    row.append(top, badges);
     // Availability controls (Prepare, hidden by default)
     row.append(avail);
     tList.append(row);
@@ -2433,10 +2492,10 @@ function renderStoryCard() {
 
   // Questions
   const qSection = el('div', { class: 'story-section' });
-  qSection.append(el('div', { class: 'subtext' }, `${root?.name || 'Thread'} — Questions`));
+  qSection.append(el('div', { class: 'subtext section-kicker' }, `${root?.name || 'Thread'} — Questions`));
   if (!n.questions.length) qSection.append(el('div', { class: 'empty' }, 'No questions yet.'));
   for (const q of n.questions) {
-    const wrap = el('div', { class: 'inline-item' });
+    const wrap = el('div', { class: 'inline-item question-inline-row' });
     // Top row: label + actions
     const top = el('div', { class: 'kv' });
     const label = el('input', { type: 'text', class: 'task-title-input' });
@@ -2447,13 +2506,12 @@ function renderStoryCard() {
       if (qi >= 0) live.questions[qi].text = label.value.trim() || live.questions[qi].text;
       store.saveNow();
     });
-    const actions = el('div');
-    const delBtn = el('button', { class: 'btn ghost' }, 'Remove');
-    delBtn.addEventListener('click', () => {
+    const actions = el('div', { class: 'row-actions' });
+    const delBtn = createInlineIconAction('Remove question', () => {
       const live = findNodeById(store.data.threads, n.id);
       live.questions = live.questions.filter(x => x.id !== q.id);
       store.saveNow(); renderStoryCard(); renderProgress();
-    });
+    }, '✕', 'danger');
     actions.append(delBtn);
     top.append(label, actions);
     wrap.append(top);
@@ -2474,7 +2532,7 @@ function renderStoryCard() {
 
   // Tasks
   const tSection = el('div', { class: 'story-section' });
-  tSection.append(el('div', { class: 'subtext' }, `${root?.name || 'Thread'} — Tasks`));
+  tSection.append(el('div', { class: 'subtext section-kicker' }, `${root?.name || 'Thread'} — Tasks`));
   const tasksEl = el('div', { class: 'tasks' });
   const depMap = allTaskRefMap();
   const now = new Date();
@@ -2510,7 +2568,7 @@ function renderStoryCard() {
         });
       });
     }
-    const main = el('div');
+    const main = el('div', { class: 'review-task-main' });
     const titleInput = el('input', { type: 'text', class: 'task-title-input' });
     titleInput.value = t.text;
     titleInput.addEventListener('change', () => {
@@ -2524,7 +2582,7 @@ function renderStoryCard() {
       }, { renderThreads: true });
     });
     main.append(titleInput);
-    const btns = el('div', { class: 'meta' });
+    const btns = el('div', { class: 'meta review-task-actions' });
     const pri = el('select', { class: 'priority-select', title: 'Priority' });
     for (let i = 1; i <= 5; i++) pri.append(el('option', { value: String(i) }, i));
     pri.value = String(t.priority || 3);
@@ -2539,8 +2597,7 @@ function renderStoryCard() {
       renderStoryCard();
       if (!$('#view-tasks').hidden) renderTasksPane();
     });
-    const delBtn = el('button', { class: 'btn ghost' }, 'Remove');
-    delBtn.addEventListener('click', () => {
+    const delBtn = createInlineIconAction('Remove task', () => {
       const live = findNodeById(store.data.threads, n.id);
       live.tasks = live.tasks.filter(x => x.id !== t.id);
       store.saveNow();
@@ -2548,15 +2605,16 @@ function renderStoryCard() {
       renderStoryCard();
       renderThreads();
       if (!$('#view-tasks').hidden) renderTasksPane();
-    });
+    }, '✕', 'danger');
     const avail = buildAvailabilityControls(n.id, t.id, () => renderStoryCard());
     avail.hidden = !isTagPanelOpen('review', t.id);
-    const availBtn = el('button', { class: 'btn ghost' }, 'Tags');
+    const availBtn = el('button', { class: 'btn ghost btn-lite' }, 'Tags');
     availBtn.addEventListener('click', () => {
       avail.hidden = !avail.hidden;
       setTagPanelOpen('review', t.id, !avail.hidden);
     });
     btns.append(pri, threadSel, availBtn, delBtn);
+    main.append(buildTaskStateBadges(t, { now, depMap, done }));
     const reason = availabilityReason(t, now, null, depMap);
     const tagline = buildTaskTagline(t, reason, {
       quickEdit: {
@@ -2857,9 +2915,15 @@ async function init() {
   });
   document.addEventListener('click', (e) => {
     const bar = $('.utility-bar');
-    if (!bar || bar.contains(e.target)) return;
-    if (globalSearch) globalSearch.value = '';
-    renderSearchResults('');
+    const inUtilityBar = !!(bar && bar.contains(e.target));
+    if (!inUtilityBar) {
+      if (globalSearch) globalSearch.value = '';
+      renderSearchResults('');
+    }
+    $$('.node-menu[open]').forEach((menu) => {
+      if (menu.contains(e.target)) return;
+      menu.removeAttribute('open');
+    });
   });
   $('#btn-undo')?.addEventListener('click', undoChange);
   $('#btn-redo')?.addEventListener('click', redoChange);
@@ -4416,7 +4480,7 @@ function renderTasksPane() {
         });
       }
 
-      const actions = el('div', { class: 'meta task-actions series-actions-inline' });
+      const actions = el('div', { class: 'meta task-actions card-task-actions series-actions-inline' });
       if (!isProjectDone) {
         const continueBtn = el('button', { class: 'btn primary', type: 'button' }, 'Continue Project');
         continueBtn.addEventListener('click', () => {
@@ -4494,7 +4558,7 @@ function renderTasksPane() {
       });
       const avail = buildAvailabilityControls(n.id, t.id, () => renderTasksPane());
       avail.hidden = !isTagPanelOpen('tasks', t.id);
-      const availBtn = el('button', { class: 'btn ghost' }, 'Tags');
+      const availBtn = el('button', { class: 'btn ghost btn-lite' }, 'Tags');
       availBtn.addEventListener('click', () => {
         avail.hidden = !avail.hidden;
         setTagPanelOpen('tasks', t.id, !avail.hidden);
@@ -4513,6 +4577,7 @@ function renderTasksPane() {
 
       const contextLine = nodePath(n) + (ref.reason ? ` • ${ref.reason}` : '');
       const ctxEl = el('div', { class: 'ctx' }, contextLine);
+      const stateBadges = buildTaskStateBadges(t, { now, depMap, done: ref.done });
       const metaRow = buildTaskMetaRow(t, {
         quickEdit: {
           onPriorityCycle: () => {
@@ -4538,7 +4603,7 @@ function renderTasksPane() {
         showLocation: false,
         showDuration: false,
       });
-      item.append(head, progress, ctxEl, metaRow, nextBlock);
+      item.append(head, progress, ctxEl, stateBadges, metaRow, nextBlock);
       if (recentItems.length) item.append(recent);
       if (tagline) item.append(tagline);
       item.append(actions, avail);
@@ -4654,6 +4719,7 @@ function renderTasksPane() {
       showDuration: false,
     });
     if (tagline) main.append(tagline);
+    main.append(buildTaskStateBadges(t, { now, depMap, done: ref.done }));
     if (!sub && !isSeriesTask(t)) {
       const breakdown = buildBreakIntoStepsCta((stepText) => {
         addSubtaskToTask(t, stepText, 1);
@@ -4670,7 +4736,7 @@ function renderTasksPane() {
       });
       main.append(breakdown);
     }
-    const actions = el('div', { class: 'meta task-actions' });
+    const actions = el('div', { class: 'meta task-actions card-task-actions' });
     const pri = el('select', { class: 'priority-select', title: 'Priority' });
     for (let i = 1; i <= 5; i++) pri.append(el('option', { value: String(i) }, i));
     pri.value = String(t.priority || 3);
@@ -4680,8 +4746,7 @@ function renderTasksPane() {
       if (!$('#view-review').hidden) onReviewVisibility();
       renderTasksPane();
     });
-    const del = el('button', { class: 'btn ghost danger' }, 'Remove');
-    del.addEventListener('click', () => {
+    const del = createInlineIconAction('Remove task', () => {
       if (sub) {
         t.series = (t.series || []).filter(x => x.id !== sub.id);
         store.save(); renderTasksPane();
@@ -4689,10 +4754,10 @@ function renderTasksPane() {
         n.tasks = n.tasks.filter(x => x.id !== t.id);
         store.save(); renderTasksPane(); renderThreads(); renderProgress(); if (!$('#review-stage').hidden) renderStoryCard();
       }
-    });
+    }, '✕', 'danger');
     const avail = buildAvailabilityControls(n.id, t.id, () => renderTasksPane());
     avail.hidden = !isTagPanelOpen('tasks', t.id);
-    const availBtn = el('button', { class: 'btn ghost' }, 'Tags');
+    const availBtn = el('button', { class: 'btn ghost btn-lite' }, 'Tags');
     availBtn.addEventListener('click', () => {
       avail.hidden = !avail.hidden;
       setTagPanelOpen('tasks', t.id, !avail.hidden);
