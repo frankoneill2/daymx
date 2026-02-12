@@ -4917,7 +4917,7 @@ function renderTasksPane() {
         if (!$('#view-review').hidden) onReviewVisibility();
         renderTasksPane();
       });
-      const avail = buildAvailabilityControls(n.id, t.id, () => renderTasksPane());
+      const avail = buildAvailabilityControls(n.id, t.id, () => rerenderTasksPaneKeepViewport());
       avail.hidden = !isTagPanelOpen('tasks', t.id);
       const availBtn = el('button', { class: 'btn ghost btn-lite' }, 'Tags');
       availBtn.addEventListener('click', () => {
@@ -5085,7 +5085,7 @@ function renderTasksPane() {
           renderProgress();
           renderStoryCard();
         }
-        renderTasksPane();
+        rerenderTasksPaneKeepViewport();
         showToast('Series started');
         return true;
       });
@@ -5110,7 +5110,7 @@ function renderTasksPane() {
         store.save(); renderTasksPane(); renderThreads(); renderProgress(); if (!$('#review-stage').hidden) renderStoryCard();
       }
     }, '✕', 'danger');
-    const avail = buildAvailabilityControls(n.id, t.id, () => renderTasksPane());
+    const avail = buildAvailabilityControls(n.id, t.id, () => rerenderTasksPaneKeepViewport());
     avail.hidden = !isTagPanelOpen('tasks', t.id);
     const availBtn = el('button', { class: 'btn ghost btn-lite' }, 'Tags');
     availBtn.addEventListener('click', () => {
