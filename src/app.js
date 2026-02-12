@@ -4020,6 +4020,21 @@ function renderTasksPane() {
     done: entries.filter(e => e.done).length,
     urgent: entries.filter(e => !e.done && (e.due.state === 'overdue' || e.due.state === 'soon')).length,
   };
+  const jumpToTaskCard = (taskId) => {
+    if (!taskId) return false;
+    const rawTaskId = String(taskId);
+    const escapedTaskId = (typeof CSS !== 'undefined' && typeof CSS.escape === 'function')
+      ? CSS.escape(rawTaskId)
+      : rawTaskId.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
+    const target = root.querySelector(`.task[data-task-id="${escapedTaskId}"]`);
+    if (!target) return false;
+    if (!isElementOnScreen(target)) target.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    target.classList.add('next-step-focus');
+    setTimeout(() => target.classList.remove('next-step-focus'), 1800);
+    const firstCb = target.querySelector('input[type="checkbox"]');
+    firstCb?.focus({ preventScroll: true });
+    return true;
+  };
 
   const seenEstimateTasks = new Set();
   let estimateTaggedMins = 0;
@@ -4125,19 +4140,19 @@ function renderTasksPane() {
       const nudge = el('div', { class: 'project-nudge' });
       const text = el('div', { class: 'project-nudge-text' }, `Progress made on ${projectNudge.taskText || 'project'} • ${projectNudge.nextLabel || 'Next step unlocked'}`);
       const row = el('div', { class: 'project-nudge-actions' });
-      const cont = el('button', { class: 'btn primary', type: 'button' }, 'Continue');
-      cont.addEventListener('click', () => {
-        tasksViewState.focusTaskId = projectNudge.taskId;
-        saveTasksViewState();
+      const open = el('button', { class: 'btn primary', type: 'button' }, 'Jump to Project');
+      open.addEventListener('click', () => {
+        const taskId = projectNudge.taskId;
+        projectNudge = null;
+        nudge.remove();
+        if (!jumpToTaskCard(taskId)) renderTasksPane();
+      });
+      const dismiss = el('button', { class: 'btn ghost', type: 'button' }, 'Dismiss');
+      dismiss.addEventListener('click', () => {
         projectNudge = null;
         renderTasksPane();
       });
-      const later = el('button', { class: 'btn ghost', type: 'button' }, 'Later');
-      later.addEventListener('click', () => {
-        projectNudge = null;
-        renderTasksPane();
-      });
-      row.append(cont, later);
+      row.append(open, dismiss);
       nudge.append(text, row);
       statusPanel.append(nudge);
     }
@@ -4526,6 +4541,7 @@ function renderTasksPane() {
       class: 'task' + (ref.done ? ' completed' : ''),
       style: `border-left:6px solid ${r?.color || 'var(--accent)'}`,
       'data-entry-key': key,
+      'data-task-id': t.id,
     });
     const applyTaskCardMutation = (updater, options = {}) => {
       updater(t);
@@ -4694,6 +4710,21 @@ function renderTasksPane() {
           if (!wasDone && task.completed) triggerProjectCompletionCue(task);
         }, { renderThreads: true });
       };
+      const reopenLastCompletedStep = () => {
+        applyTaskCardMutation((task) => {
+          const list = (task.series || []).slice().sort((a, b) => {
+            const ra = Math.max(1, Number(a.rank) || 1);
+            const rb = Math.max(1, Number(b.rank) || 1);
+            if (ra !== rb) return rb - ra;
+            const oa = Number.isFinite(a.order) ? Number(a.order) : 0;
+            const ob = Number.isFinite(b.order) ? Number(b.order) : 0;
+            return ob - oa;
+          });
+          const latestDone = list.find((s) => !!s.completed);
+          if (!latestDone) return;
+          setSubtaskCompleted(task, latestDone, false);
+        }, { renderThreads: true });
+      };
       if (!isProjectDone) {
         if (allStepsDone) {
           const doneBtn = el('button', { class: 'btn primary', type: 'button' }, 'Mark Project Done');
@@ -4701,30 +4732,10 @@ function renderTasksPane() {
             applyDoneState(true);
           });
           const reopenPrep = el('button', { class: 'btn ghost', type: 'button' }, 'Reopen Last Step');
-          reopenPrep.addEventListener('click', () => {
-            applyTaskCardMutation((task) => {
-              const list = (task.series || []).slice().sort((a, b) => {
-                const ra = Math.max(1, Number(a.rank) || 1);
-                const rb = Math.max(1, Number(b.rank) || 1);
-                if (ra !== rb) return rb - ra;
-                const oa = Number.isFinite(a.order) ? Number(a.order) : 0;
-                const ob = Number.isFinite(b.order) ? Number(b.order) : 0;
-                return ob - oa;
-              });
-              const latestDone = list.find((s) => !!s.completed);
-              if (!latestDone) return;
-              setSubtaskCompleted(task, latestDone, false);
-            }, { renderThreads: true });
-          });
+          reopenPrep.addEventListener('click', reopenLastCompletedStep);
           primaryActions.append(doneBtn, reopenPrep);
         } else {
-          const continueBtn = el('button', { class: 'btn primary', type: 'button' }, 'Continue Project');
-          continueBtn.addEventListener('click', () => {
-            tasksViewState.focusTaskId = t.id;
-            saveTasksViewState();
-            renderTasksPane();
-          });
-          const startBtn = el('button', { class: 'btn ghost', type: 'button' }, 'Start Next Step');
+          const startBtn = el('button', { class: 'btn primary', type: 'button' }, 'Start Next Step');
           startBtn.addEventListener('click', () => {
             const firstRow = nextList.querySelector('.series-next-row');
             const firstCb = firstRow?.querySelector('input[type="checkbox"]');
@@ -4732,7 +4743,12 @@ function renderTasksPane() {
             if (firstRow && !isElementOnScreen(firstRow)) firstRow.scrollIntoView({ behavior: 'smooth', block: 'center' });
           });
           if (!activeSubtasks.length) startBtn.disabled = true;
-          primaryActions.append(continueBtn, startBtn);
+          primaryActions.append(startBtn);
+          if (stats.done > 0) {
+            const reopenRecent = el('button', { class: 'btn ghost', type: 'button' }, 'Reopen Last Step');
+            reopenRecent.addEventListener('click', reopenLastCompletedStep);
+            primaryActions.append(reopenRecent);
+          }
         }
       } else {
         const archiveNow = el('button', { class: 'btn primary', type: 'button' }, 'Archive Now');
@@ -4742,21 +4758,7 @@ function renderTasksPane() {
           }, { renderThreads: true });
         });
         const reopen = el('button', { class: 'btn ghost', type: 'button' }, 'Reopen Last Step');
-        reopen.addEventListener('click', () => {
-          applyTaskCardMutation((task) => {
-            const list = (task.series || []).slice().sort((a, b) => {
-              const ra = Math.max(1, Number(a.rank) || 1);
-              const rb = Math.max(1, Number(b.rank) || 1);
-              if (ra !== rb) return rb - ra;
-              const oa = Number.isFinite(a.order) ? Number(a.order) : 0;
-              const ob = Number.isFinite(b.order) ? Number(b.order) : 0;
-              return ob - oa;
-            });
-            const latestDone = list.find((s) => !!s.completed);
-            if (!latestDone) return;
-            setSubtaskCompleted(task, latestDone, false);
-          }, { renderThreads: true });
-        });
+        reopen.addEventListener('click', reopenLastCompletedStep);
         const markOpen = el('button', { class: 'btn ghost', type: 'button' }, 'Mark Project Open');
         markOpen.addEventListener('click', () => {
           applyDoneState(false);
