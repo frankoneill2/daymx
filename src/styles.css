@@ -1119,20 +1119,6 @@ button:focus-visible {
   color: var(--subtext);
 }
 
-@media (min-width: 960px) {
-  #view-tasks .task-section-head {
-    position: sticky;
-    top: calc(var(--tasks-sticky-top) + var(--tasks-mini-height));
-    z-index: 12;
-    margin: 0 0 6px;
-    padding: 6px 8px;
-    border: 1px solid color-mix(in srgb, var(--border-soft) 78%, #d2e5ff 22%);
-    border-radius: 10px;
-    background: linear-gradient(180deg, rgba(11, 22, 35, 0.96), rgba(9, 18, 29, 0.96));
-    backdrop-filter: blur(6px) saturate(120%);
-  }
-}
-
 .task > .availability {
   grid-column: 1 / -1;
 }

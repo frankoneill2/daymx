@@ -3849,6 +3849,14 @@ function flushPendingSeriesRevealUi() {
   pendingSeriesReveal = null;
 }
 
+function rerenderTasksPaneKeepViewport() {
+  const prevY = window.scrollY;
+  renderTasksPane();
+  const maxY = Math.max(0, (document.documentElement?.scrollHeight || 0) - window.innerHeight);
+  const nextY = Math.max(0, Math.min(prevY, maxY));
+  if (Math.abs(window.scrollY - nextY) > 1) window.scrollTo(0, nextY);
+}
+
 function clearTasksStickyVisibilitySync() {
   if (typeof tasksStickyVisibilityCleanup === 'function') {
     tasksStickyVisibilityCleanup();
@@ -4527,7 +4535,7 @@ function renderTasksPane() {
         renderProgress();
         renderStoryCard();
       }
-      renderTasksPane();
+      rerenderTasksPaneKeepViewport();
     };
     if (ref.kind === 'series-flow') {
       item.classList.add('series-flow-card');
