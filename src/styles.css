@@ -1387,47 +1387,14 @@ button.task-meta-value:hover {
 .series-flow-head {
   display: flex;
   flex-direction: column;
-  gap: 4px;
+  gap: 3px;
 }
 
 .series-flow-title-wrap {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: 6px;
   min-width: 0;
-}
-
-.series-flow-type {
-  display: inline-flex;
-  align-items: center;
-  padding: 2px 8px;
-  border-radius: 999px;
-  border: 1px solid color-mix(in srgb, var(--accent) 56%, var(--border));
-  background: color-mix(in srgb, var(--accent) 20%, #182a40);
-  color: #def1ff;
-  font-size: 10px;
-  font-weight: 800;
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
-}
-
-.series-flow-card.series-flow-complete .series-flow-type {
-  border-color: color-mix(in srgb, var(--accent-2) 64%, var(--border));
-  background: color-mix(in srgb, var(--accent-2) 36%, #163346);
-  color: #f1fff8;
-}
-
-.series-complete-badge {
-  display: inline-flex;
-  align-items: center;
-  padding: 2px 8px;
-  border-radius: 999px;
-  border: 1px solid color-mix(in srgb, var(--accent-2) 62%, var(--border));
-  background: color-mix(in srgb, var(--accent-2) 34%, #1c3a44);
-  color: #f4fff9;
-  font-size: 10px;
-  font-weight: 800;
-  letter-spacing: 0.08em;
 }
 
 .series-flow-card.series-flow-complete .series-flow-title {
@@ -1521,6 +1488,10 @@ button.task-meta-value:hover {
   gap: 7px;
 }
 
+.series-next-empty-note {
+  padding: 2px 1px 0;
+}
+
 .series-flow-card.series-flow-complete .series-next-list {
   flex-direction: row;
   flex-wrap: wrap;
@@ -1575,18 +1546,18 @@ button.task-meta-value:hover {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
-  gap: 6px;
+  gap: 5px;
 }
 
 .series-completed-chip {
   display: inline-flex;
   align-items: center;
-  padding: 2px 8px;
+  padding: 1px 7px;
   border-radius: 999px;
   border: 1px solid color-mix(in srgb, var(--accent-2) 42%, var(--border));
   background: color-mix(in srgb, var(--accent-2) 20%, #15283d);
   color: #d9f8eb;
-  font-size: 11px;
+  font-size: 10px;
   font-weight: 700;
   max-width: 100%;
   overflow: hidden;
@@ -1611,7 +1582,7 @@ button.task-meta-value:hover {
 .series-actions-wrap {
   display: flex;
   flex-direction: column;
-  gap: 6px;
+  gap: 5px;
 }
 
 .series-actions-primary {

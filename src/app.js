@@ -4558,8 +4558,6 @@ function renderTasksPane() {
 
       const head = el('div', { class: 'series-flow-head' });
       const titleWrap = el('div', { class: 'series-flow-title-wrap' });
-      titleWrap.append(el('span', { class: 'series-flow-type' }, isProjectDone ? 'Project Complete' : 'Project Flow'));
-      if (isProjectDone) titleWrap.append(el('span', { class: 'series-complete-badge' }, '100%'));
       const title = el('input', { type: 'text', class: 'task-title-input series-flow-title' });
       title.value = t.text;
       title.addEventListener('change', () => {
@@ -4572,9 +4570,9 @@ function renderTasksPane() {
       titleWrap.append(title);
       const completeStamp = completedAt ? ` • ${completedAt.toLocaleString()}` : '';
       const metaText = isProjectDone
-        ? `All ${stats.total} steps complete • ${pct}%${completeStamp}`
+        ? `Project complete • ${stats.total} steps finished${completeStamp}`
         : (allStepsDone
-          ? `All listed steps complete • ${stats.done}/${stats.total} done • Mark project done when fully complete`
+          ? `All listed steps complete • ${stats.done}/${stats.total} done`
           : `Step ${activeRank}/${Math.max(1, stats.maxRank || 1)} • ${stats.done}/${stats.total} done • ${pct}%`);
       const meta = el('div', { class: 'series-flow-meta' }, metaText);
       head.append(titleWrap, meta);
@@ -4593,7 +4591,7 @@ function renderTasksPane() {
       } else {
         const nextHead = el('div', { class: 'series-do-next-head' });
         if (allStepsDone) {
-          nextHead.append(el('span', { class: 'subtext' }, `All listed steps complete • ${stats.done}/${stats.total} done`));
+          nextHead.append(el('span', { class: 'subtext' }, `Ready to close • ${stats.done}/${stats.total} listed steps complete`));
         } else {
           nextHead.append(el('span', { class: 'subtext' }, `Do Next • Step ${activeRank} (${groupDone}/${Math.max(1, currentGroup.length)} complete)`));
           if (activeCount > 1) nextHead.append(el('span', { class: 'pill tag' }, `${activeCount} parallel`));
@@ -4612,8 +4610,10 @@ function renderTasksPane() {
         if (orderedSeries.length > preview.length) {
           nextList.append(el('span', { class: 'series-completed-chip' }, `+${orderedSeries.length - preview.length} more`));
         }
+      } else if (allStepsDone) {
+        nextList.append(el('div', { class: 'subtext series-next-empty-note' }, 'Mark project done when fully complete.'));
       } else if (!activeSubtasks.length) {
-        nextList.append(el('div', { class: 'empty' }, allStepsDone ? 'All listed steps complete. Tick project done when fully finished.' : 'No active steps.'));
+        nextList.append(el('div', { class: 'subtext series-next-empty-note' }, 'No active steps.'));
       } else {
         activeSubtasks.forEach((s) => {
           const rowKey = `subtask:${t.id}:${s.id}`;
@@ -4677,37 +4677,68 @@ function renderTasksPane() {
       const actions = el('div', { class: 'series-actions-wrap' });
       const primaryActions = el('div', { class: 'meta task-actions series-actions-inline series-actions-primary' });
       const secondaryActions = el('div', { class: 'meta task-actions card-task-actions series-actions-inline series-actions-secondary' });
+      const doneWrap = el('label', { class: 'series-project-toggle' });
+      const doneCb = el('input', { type: 'checkbox' });
+      doneCb.checked = !!t.completed;
+      doneCb.disabled = !isProjectDone && !allStepsDone;
+      doneCb.title = allStepsDone
+        ? 'Mark this project complete'
+        : 'Complete all listed steps before marking project complete';
+      const applyDoneState = (checked) => {
+        if (checked) stickyDoneTaskAnchors.set(t.id, orderIndexByKey.get(key) ?? 0);
+        else stickyDoneTaskAnchors.delete(t.id);
+        applyTaskCardMutation((task) => {
+          const wasDone = !!task.completed;
+          setTaskCompleted(task, checked);
+          if (!wasDone && task.completed) triggerProjectCompletionCue(task);
+        }, { renderThreads: true });
+      };
+      doneCb.addEventListener('change', () => {
+        applyDoneState(doneCb.checked);
+      });
+      doneWrap.append(doneCb, document.createTextNode(' Project done'));
       if (!isProjectDone) {
-        const continueBtn = el('button', { class: 'btn primary', type: 'button' }, 'Continue Project');
-        continueBtn.addEventListener('click', () => {
-          tasksViewState.focusTaskId = t.id;
-          saveTasksViewState();
-          renderTasksPane();
-        });
-        const startBtn = el('button', { class: 'btn ghost', type: 'button' }, 'Start Next Step');
-        startBtn.addEventListener('click', () => {
-          const firstRow = nextList.querySelector('.series-next-row');
-          const firstCb = firstRow?.querySelector('input[type="checkbox"]');
-          firstCb?.focus();
-          if (firstRow && !isElementOnScreen(firstRow)) firstRow.scrollIntoView({ behavior: 'smooth', block: 'center' });
-        });
-        if (!activeSubtasks.length) startBtn.disabled = true;
-        const doneWrap = el('label', { class: 'series-project-toggle' });
-        const doneCb = el('input', { type: 'checkbox' });
-        doneCb.checked = !!t.completed;
-        doneCb.disabled = !allStepsDone;
-        doneCb.title = allStepsDone ? 'Mark this project complete' : 'Complete all listed steps before marking project complete';
-        doneCb.addEventListener('change', () => {
-          if (doneCb.checked) stickyDoneTaskAnchors.set(t.id, orderIndexByKey.get(key) ?? 0);
-          else stickyDoneTaskAnchors.delete(t.id);
-          applyTaskCardMutation((task) => {
-            const wasDone = !!task.completed;
-            setTaskCompleted(task, doneCb.checked);
-            if (!wasDone && task.completed) triggerProjectCompletionCue(task);
-          }, { renderThreads: true });
-        });
-        doneWrap.append(doneCb, document.createTextNode(' Project done'));
-        primaryActions.append(continueBtn, startBtn, doneWrap);
+        if (allStepsDone) {
+          const doneBtn = el('button', { class: 'btn primary', type: 'button' }, 'Mark Project Done');
+          doneBtn.addEventListener('click', () => {
+            if (doneCb.checked) return;
+            doneCb.checked = true;
+            applyDoneState(true);
+          });
+          const reopenPrep = el('button', { class: 'btn ghost', type: 'button' }, 'Reopen Last Step');
+          reopenPrep.addEventListener('click', () => {
+            applyTaskCardMutation((task) => {
+              const list = (task.series || []).slice().sort((a, b) => {
+                const ra = Math.max(1, Number(a.rank) || 1);
+                const rb = Math.max(1, Number(b.rank) || 1);
+                if (ra !== rb) return rb - ra;
+                const oa = Number.isFinite(a.order) ? Number(a.order) : 0;
+                const ob = Number.isFinite(b.order) ? Number(b.order) : 0;
+                return ob - oa;
+              });
+              const latestDone = list.find((s) => !!s.completed);
+              if (!latestDone) return;
+              setSubtaskCompleted(task, latestDone, false);
+            }, { renderThreads: true });
+          });
+          primaryActions.append(doneBtn, reopenPrep, doneWrap);
+        } else {
+          const continueBtn = el('button', { class: 'btn primary', type: 'button' }, 'Continue Project');
+          continueBtn.addEventListener('click', () => {
+            tasksViewState.focusTaskId = t.id;
+            saveTasksViewState();
+            renderTasksPane();
+          });
+          const startBtn = el('button', { class: 'btn ghost', type: 'button' }, 'Start Next Step');
+          startBtn.addEventListener('click', () => {
+            const firstRow = nextList.querySelector('.series-next-row');
+            const firstCb = firstRow?.querySelector('input[type="checkbox"]');
+            firstCb?.focus();
+            if (firstRow && !isElementOnScreen(firstRow)) firstRow.scrollIntoView({ behavior: 'smooth', block: 'center' });
+          });
+          if (!activeSubtasks.length) startBtn.disabled = true;
+          primaryActions.append(continueBtn, startBtn, doneWrap);
+        }
       } else {
         const archiveNow = el('button', { class: 'btn primary', type: 'button' }, 'Archive Now');
         archiveNow.addEventListener('click', () => {
@@ -4731,16 +4762,7 @@ function renderTasksPane() {
             setSubtaskCompleted(task, latestDone, false);
           }, { renderThreads: true });
         });
-        const doneWrap = el('label', { class: 'series-project-toggle' });
-        const doneCb = el('input', { type: 'checkbox' });
-        doneCb.checked = true;
-        doneCb.addEventListener('change', () => {
-          if (!doneCb.checked) stickyDoneTaskAnchors.delete(t.id);
-          applyTaskCardMutation((task) => {
-            setTaskCompleted(task, doneCb.checked);
-          }, { renderThreads: true });
-        });
-        doneWrap.append(doneCb, document.createTextNode(' Project done'));
+        doneCb.disabled = false;
         primaryActions.append(archiveNow, reopen, doneWrap);
       }
       const pri = el('select', { class: 'priority-select', title: 'Priority' });
