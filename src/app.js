@@ -3081,6 +3081,7 @@ function switchView(name) {
   tReview.classList.toggle('active', isReview);
   tTasks.classList.toggle('active', isTasks);
   tPantry.classList.toggle('active', isPantry);
+  if (!isTasks) clearTasksStickyVisibilitySync();
   if (isReview) onReviewVisibility();
   if (isTasks) renderTasksPane();
   if (isPantry) renderPantryActiveView();
@@ -3497,6 +3498,7 @@ let pendingSeriesReveal = null;
 let projectNudge = null;
 let recentProjectCompletion = null;
 let recentProjectCompletionTimer = null;
+let tasksStickyVisibilityCleanup = null;
 const stickyDoneTaskAnchors = new Map();
 
 function triggerProjectCompletionCue(task) {
@@ -3847,9 +3849,60 @@ function flushPendingSeriesRevealUi() {
   pendingSeriesReveal = null;
 }
 
+function clearTasksStickyVisibilitySync() {
+  if (typeof tasksStickyVisibilityCleanup === 'function') {
+    tasksStickyVisibilityCleanup();
+    tasksStickyVisibilityCleanup = null;
+  }
+}
+
+function bindTasksStickyVisibility(stickyBar, filterPanel) {
+  clearTasksStickyVisibilitySync();
+  if (!stickyBar || !filterPanel) return;
+
+  let raf = 0;
+  const topOffset = () => {
+    const raw = getComputedStyle(document.documentElement).getPropertyValue('--tasks-sticky-top');
+    const px = Number.parseFloat(raw);
+    return Number.isFinite(px) ? px : 72;
+  };
+  const sync = () => {
+    const tasksView = $('#view-tasks');
+    if (!tasksView || tasksView.hidden) {
+      stickyBar.classList.remove('is-visible');
+      stickyBar.classList.add('is-hidden');
+      return;
+    }
+    const rect = filterPanel.getBoundingClientRect();
+    const shouldShow = rect.bottom <= topOffset() + 6;
+    stickyBar.classList.toggle('is-visible', shouldShow);
+    stickyBar.classList.toggle('is-hidden', !shouldShow);
+  };
+  const queueSync = () => {
+    if (raf) return;
+    raf = requestAnimationFrame(() => {
+      raf = 0;
+      sync();
+    });
+  };
+
+  window.addEventListener('scroll', queueSync, { passive: true });
+  window.addEventListener('resize', queueSync);
+  sync();
+  tasksStickyVisibilityCleanup = () => {
+    window.removeEventListener('scroll', queueSync);
+    window.removeEventListener('resize', queueSync);
+    if (raf) cancelAnimationFrame(raf);
+  };
+}
+
 function renderTasksPane() {
   const root = $('#tasks-root');
-  if (!root) return;
+  if (!root) {
+    clearTasksStickyVisibilitySync();
+    return;
+  }
+  clearTasksStickyVisibilitySync();
   root.innerHTML = '';
   root.classList.toggle('tasks-compact', !!tasksViewState.compactMode);
   const now = new Date();
@@ -4390,8 +4443,8 @@ function renderTasksPane() {
     moreBody.append(buildGroup('Selection', bulkRow));
     filterPanel.append(moreFilters);
 
-    const stickyBar = el('div', { class: 'tasks-sticky-controls' });
-    const stickySearch = el('input', { type: 'search', placeholder: 'Quick filter…', 'aria-label': 'Quick task filter' });
+    const stickyBar = el('div', { class: 'tasks-sticky-controls is-hidden' });
+    const stickySearch = el('input', { type: 'search', placeholder: 'Search within tasks...', 'aria-label': 'Search within tasks' });
     stickySearch.value = tasksViewState.searchText || '';
     stickySearch.addEventListener('input', () => {
       tasksViewState.searchText = stickySearch.value;
@@ -4432,6 +4485,7 @@ function renderTasksPane() {
     stickyBar.append(stickySearch, stickyActive, stickyTools);
 
     controls.append(filterPanel, stickyBar);
+    bindTasksStickyVisibility(stickyBar, filterPanel);
   }
   const movingEntries = movingTaskEntries('tasks');
   if (movingEntries.length) {
