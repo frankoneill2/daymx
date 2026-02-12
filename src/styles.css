@@ -1353,7 +1353,7 @@ button.task-meta-value:hover {
 
 .series-flow-card {
   grid-template-columns: 1fr;
-  gap: 10px;
+  gap: 8px;
   padding: 12px;
 }
 
@@ -1546,7 +1546,7 @@ button.task-meta-value:hover {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
-  gap: 5px;
+  gap: 4px;
 }
 
 .series-completed-chip {
@@ -1554,9 +1554,9 @@ button.task-meta-value:hover {
   align-items: center;
   padding: 1px 7px;
   border-radius: 999px;
-  border: 1px solid color-mix(in srgb, var(--accent-2) 42%, var(--border));
-  background: color-mix(in srgb, var(--accent-2) 20%, #15283d);
-  color: #d9f8eb;
+  border: 1px solid color-mix(in srgb, var(--accent-2) 30%, var(--border));
+  background: color-mix(in srgb, var(--accent-2) 12%, #14293d);
+  color: color-mix(in srgb, var(--accent-2) 58%, #edf8f2 42%);
   font-size: 10px;
   font-weight: 700;
   max-width: 100%;
@@ -1566,9 +1566,9 @@ button.task-meta-value:hover {
 }
 
 .series-flow-card.series-flow-complete .series-completed-chip {
-  border-color: color-mix(in srgb, var(--accent-2) 56%, var(--border));
-  background: color-mix(in srgb, var(--accent-2) 24%, #1a3640);
-  color: #e5fff2;
+  border-color: color-mix(in srgb, var(--accent-2) 40%, var(--border));
+  background: color-mix(in srgb, var(--accent-2) 18%, #193741);
+  color: color-mix(in srgb, var(--accent-2) 62%, #f3fff8 38%);
   text-decoration: line-through;
   text-decoration-thickness: 1.5px;
   text-decoration-color: color-mix(in srgb, var(--accent-2) 62%, #0f2217 38%);
@@ -1582,7 +1582,7 @@ button.task-meta-value:hover {
 .series-actions-wrap {
   display: flex;
   flex-direction: column;
-  gap: 5px;
+  gap: 4px;
 }
 
 .series-actions-primary {
@@ -1596,18 +1596,10 @@ button.task-meta-value:hover {
   justify-content: flex-start;
 }
 
-.series-project-toggle {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  color: var(--subtext);
-  font-size: 12px;
-  font-weight: 700;
-}
-
-.series-project-toggle input[type='checkbox'] {
-  width: 16px;
-  height: 16px;
+.series-actions-primary .btn,
+.series-actions-secondary .btn {
+  min-height: 36px;
+  padding: 7px 11px;
 }
 
 .task-actions {

@@ -4677,13 +4677,6 @@ function renderTasksPane() {
       const actions = el('div', { class: 'series-actions-wrap' });
       const primaryActions = el('div', { class: 'meta task-actions series-actions-inline series-actions-primary' });
       const secondaryActions = el('div', { class: 'meta task-actions card-task-actions series-actions-inline series-actions-secondary' });
-      const doneWrap = el('label', { class: 'series-project-toggle' });
-      const doneCb = el('input', { type: 'checkbox' });
-      doneCb.checked = !!t.completed;
-      doneCb.disabled = !isProjectDone && !allStepsDone;
-      doneCb.title = allStepsDone
-        ? 'Mark this project complete'
-        : 'Complete all listed steps before marking project complete';
       const applyDoneState = (checked) => {
         if (checked) stickyDoneTaskAnchors.set(t.id, orderIndexByKey.get(key) ?? 0);
         else stickyDoneTaskAnchors.delete(t.id);
@@ -4693,16 +4686,10 @@ function renderTasksPane() {
           if (!wasDone && task.completed) triggerProjectCompletionCue(task);
         }, { renderThreads: true });
       };
-      doneCb.addEventListener('change', () => {
-        applyDoneState(doneCb.checked);
-      });
-      doneWrap.append(doneCb, document.createTextNode(' Project done'));
       if (!isProjectDone) {
         if (allStepsDone) {
           const doneBtn = el('button', { class: 'btn primary', type: 'button' }, 'Mark Project Done');
           doneBtn.addEventListener('click', () => {
-            if (doneCb.checked) return;
-            doneCb.checked = true;
             applyDoneState(true);
           });
           const reopenPrep = el('button', { class: 'btn ghost', type: 'button' }, 'Reopen Last Step');
@@ -4721,7 +4708,7 @@ function renderTasksPane() {
               setSubtaskCompleted(task, latestDone, false);
             }, { renderThreads: true });
           });
-          primaryActions.append(doneBtn, reopenPrep, doneWrap);
+          primaryActions.append(doneBtn, reopenPrep);
         } else {
           const continueBtn = el('button', { class: 'btn primary', type: 'button' }, 'Continue Project');
           continueBtn.addEventListener('click', () => {
@@ -4737,7 +4724,7 @@ function renderTasksPane() {
             if (firstRow && !isElementOnScreen(firstRow)) firstRow.scrollIntoView({ behavior: 'smooth', block: 'center' });
           });
           if (!activeSubtasks.length) startBtn.disabled = true;
-          primaryActions.append(continueBtn, startBtn, doneWrap);
+          primaryActions.append(continueBtn, startBtn);
         }
       } else {
         const archiveNow = el('button', { class: 'btn primary', type: 'button' }, 'Archive Now');
@@ -4762,8 +4749,11 @@ function renderTasksPane() {
             setSubtaskCompleted(task, latestDone, false);
           }, { renderThreads: true });
         });
-        doneCb.disabled = false;
-        primaryActions.append(archiveNow, reopen, doneWrap);
+        const markOpen = el('button', { class: 'btn ghost', type: 'button' }, 'Mark Project Open');
+        markOpen.addEventListener('click', () => {
+          applyDoneState(false);
+        });
+        primaryActions.append(archiveNow, reopen, markOpen);
       }
       const pri = el('select', { class: 'priority-select', title: 'Priority' });
       for (let i = 1; i <= 5; i++) pri.append(el('option', { value: String(i) }, i));
