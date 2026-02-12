@@ -10,6 +10,7 @@ const TASKS_VIEW_STATE_KEY = 'daymx-tasks-view-v2';
 const UI_PREFS_KEY = 'daymx-ui-prefs-v1';
 const GAMIFICATION_KEY = 'daymx-gamification-v1';
 const HISTORY_LIMIT = 80;
+const QUICK_CAPTURE_NEW_TAG = '__new__';
 
 function uid(prefix = 'id') {
   return `${prefix}_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 7)}`;
@@ -19,6 +20,7 @@ const defaultData = () => ({
   threads: [], // array of nodes
   pantry: { categories: [] },
   gamification: { daily: {} },
+  dailyReview: { dayKey: '', active: false, idx: 0, currentId: null },
 });
 
 const LOCATION_PRESETS = ['mobile', 'laptop', 'home', 'work'];
@@ -177,6 +179,7 @@ const store = {
       }
       ensureGamificationInData(this.data);
       setRuntimeGamificationFromData(this.data);
+      ensureDailyReviewInData(this.data);
       this.mode = 'firebase';
       // Subscribe to live updates
       this.unsub = window.daymxFirebase.subscribe((remote) => {
@@ -185,6 +188,7 @@ const store = {
         if (!this.data.pantry) this.data.pantry = { categories: [] };
         ensureGamificationInData(this.data);
         setRuntimeGamificationFromData(this.data);
+        ensureDailyReviewInData(this.data);
         // Normalize and refresh UI on remote updates
         (this.data.threads || []).forEach(normalizeNode);
         (this.data.pantry.categories || []).forEach(normalizeCategory);
@@ -193,7 +197,7 @@ const store = {
         renderThreads();
         historyState.lastSerialized = serializeData(this.data);
         // If review is visible, refresh progress/card state
-        if (!$('#review-stage').hidden) { renderProgress(); renderStoryCard(); }
+        if (!$('#view-review').hidden) onReviewVisibility();
         if (!$('#view-tasks').hidden) { renderTasksPane(); }
         if (!$('#view-pantry').hidden) { renderPantryActiveView(); }
       });
@@ -214,6 +218,7 @@ const store = {
     if (!this.data.pantry) this.data.pantry = { categories: [] };
     ensureGamificationInData(this.data);
     setRuntimeGamificationFromData(this.data);
+    ensureDailyReviewInData(this.data);
   },
   async save() {
     pushHistorySnapshot();
@@ -241,6 +246,8 @@ const uiPrefs = {
   lastView: 'prepare',
   pantryTab: 'prepare',
   captureNodeId: null,
+  capturePriority: 3,
+  captureTag: '',
 };
 
 const gamificationState = {
@@ -305,6 +312,71 @@ function dayKeyFromDate(date = new Date()) {
   const mm = String(d.getMonth() + 1).padStart(2, '0');
   const dd = String(d.getDate()).padStart(2, '0');
   return `${yyyy}-${mm}-${dd}`;
+}
+
+function clampPriority(value, fallback = 3) {
+  const n = Number(value);
+  if (!Number.isInteger(n)) return fallback;
+  return Math.max(1, Math.min(5, n));
+}
+
+function parseDayKey(dayKey) {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(String(dayKey || ''))) return null;
+  const [y, m, d] = String(dayKey).split('-').map(Number);
+  const dt = new Date(y, m - 1, d);
+  if (isNaN(dt)) return null;
+  return dt;
+}
+
+function formatDayKeyLabel(dayKey) {
+  const d = parseDayKey(dayKey);
+  const value = d || new Date();
+  return value.toLocaleDateString(undefined, {
+    weekday: 'long',
+    year: 'numeric',
+    month: 'long',
+    day: 'numeric',
+  });
+}
+
+function ensureDailyReviewInData(data, now = new Date()) {
+  if (!data || typeof data !== 'object') return { dayKey: dayKeyFromDate(now), active: false, idx: 0, currentId: null };
+  if (!data.dailyReview || typeof data.dailyReview !== 'object') data.dailyReview = {};
+  const today = dayKeyFromDate(now);
+  const state = data.dailyReview;
+  let changed = false;
+  let reset = false;
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(String(state.dayKey || ''))) {
+    state.dayKey = today;
+    changed = true;
+  }
+  if (typeof state.active !== 'boolean') {
+    state.active = false;
+    changed = true;
+  }
+  if (!Number.isFinite(state.idx) || state.idx < 0) {
+    state.idx = 0;
+    changed = true;
+  } else {
+    state.idx = Math.floor(state.idx);
+  }
+  if (state.currentId != null && typeof state.currentId !== 'string') {
+    state.currentId = null;
+    changed = true;
+  }
+  if (state.dayKey !== today) {
+    state.dayKey = today;
+    state.active = false;
+    state.idx = 0;
+    state.currentId = null;
+    changed = true;
+    reset = true;
+  }
+  return { state, changed, reset };
+}
+
+function persistSharedStateWithoutHistory() {
+  store.saveNow(store.data || {});
 }
 
 function saveGamificationState() {
@@ -398,6 +470,14 @@ const dragState = {
   sourceParentId: null,
 };
 
+const movingTaskState = {
+  prepare: new Map(),
+  review: new Map(),
+  tasks: new Map(),
+};
+
+let quickCaptureJumpState = null;
+
 function setDragState(next) {
   dragState.kind = next.kind || null;
   dragState.sourceNodeId = next.sourceNodeId || null;
@@ -419,6 +499,58 @@ function clearDragState() {
 function isDropAfterPointer(evt, target) {
   const rect = target.getBoundingClientRect();
   return evt.clientY > rect.top + rect.height / 2;
+}
+
+function movingTaskEntries(view, nodeId = null) {
+  const map = movingTaskState[view];
+  if (!map) return [];
+  const items = Array.from(map.values());
+  if (!nodeId) return items;
+  return items.filter((entry) => entry.sourceNodeId === nodeId);
+}
+
+function rememberMovingTask(view, payload) {
+  const map = movingTaskState[view];
+  if (!map || !payload?.taskId) return;
+  map.set(payload.taskId, {
+    taskId: payload.taskId,
+    text: payload.text || 'Untitled task',
+    sourceNodeId: payload.sourceNodeId || null,
+    sourcePath: payload.sourcePath || '',
+    targetNodeId: payload.targetNodeId || null,
+    targetName: payload.targetName || 'thread',
+    targetPath: payload.targetPath || payload.targetName || 'thread',
+    priority: clampPriority(payload.priority, 3),
+  });
+}
+
+function clearMovingTasksForView(view) {
+  const map = movingTaskState[view];
+  if (!map) return;
+  map.clear();
+}
+
+function buildMovingTaskNotice(entry, mode = 'task') {
+  if (mode === 'inline') {
+    const row = el('div', { class: 'inline-item moving-task' });
+    const title = el('div', { class: 'moving-task-title' }, entry.text || 'Untitled task');
+    const meta = el('div', { class: 'meta' });
+    meta.append(el('span', { class: 'pill warn moving-pill' }, `moving to ${entry.targetName}...`));
+    row.append(title, meta);
+    const path = entry.targetPath ? el('div', { class: 'subtext moving-task-path' }, entry.targetPath) : null;
+    if (path) row.append(path);
+    return row;
+  }
+  const item = el('div', { class: 'task moving-task' });
+  item.append(
+    el('div'),
+    el('div', { class: 'task-main' }, [
+      el('div', { class: 'task-title-row' }, el('div', { class: 'moving-task-title' }, entry.text || 'Untitled task')),
+      el('div', { class: 'ctx moving-task-path' }, entry.sourcePath ? `${entry.sourcePath} -> ${entry.targetPath}` : entry.targetPath || ''),
+      el('div', { class: 'tagline' }, el('span', { class: 'pill warn moving-pill' }, `moving to ${entry.targetName}...`)),
+    ])
+  );
+  return item;
 }
 
 function showToast(message, kind = 'info') {
@@ -443,6 +575,8 @@ function loadUiPrefs() {
   uiPrefs.lastView = saved.lastView || uiPrefs.lastView;
   uiPrefs.pantryTab = saved.pantryTab || uiPrefs.pantryTab;
   uiPrefs.captureNodeId = saved.captureNodeId || uiPrefs.captureNodeId;
+  uiPrefs.capturePriority = clampPriority(saved.capturePriority, uiPrefs.capturePriority);
+  uiPrefs.captureTag = normalizeTagValue(saved.captureTag || uiPrefs.captureTag);
 }
 
 function resetHistoryBaseline() {
@@ -468,7 +602,7 @@ function pushHistorySnapshot() {
 function rerenderAll() {
   recomputeIndexes();
   renderThreads();
-  if (!$('#review-stage').hidden) { renderProgress(); renderStoryCard(); }
+  if (!$('#view-review').hidden) onReviewVisibility();
   if (!$('#view-tasks').hidden) renderTasksPane();
   if (!$('#view-pantry').hidden) renderPantryActiveView();
 }
@@ -482,6 +616,7 @@ function applyHistorySnapshot(serialized, pushTo) {
   if (!store.data.pantry) store.data.pantry = { categories: [] };
   ensureGamificationInData(store.data);
   setRuntimeGamificationFromData(store.data);
+  ensureDailyReviewInData(store.data);
   (store.data.threads || []).forEach(normalizeNode);
   (store.data.pantry.categories || []).forEach(normalizeCategory);
   autoAssignThreadColors();
@@ -662,6 +797,20 @@ function moveTaskRelative(nodeId, sourceTaskId, targetTaskId, placeAfter = false
   const fromIndex = node.tasks.findIndex((t) => t.id === sourceTaskId);
   const targetIndex = node.tasks.findIndex((t) => t.id === targetTaskId);
   return reorderListByIndex(node.tasks, fromIndex, targetIndex, placeAfter);
+}
+
+function moveTaskToThread(sourceNodeId, taskId, targetNodeId) {
+  const sourceNode = findNodeById(store.data.threads || [], sourceNodeId);
+  const targetNode = findNodeById(store.data.threads || [], targetNodeId);
+  if (!sourceNode || !targetNode) return null;
+  if (sourceNode.id === targetNode.id) return null;
+  sourceNode.tasks = Array.isArray(sourceNode.tasks) ? sourceNode.tasks : [];
+  targetNode.tasks = Array.isArray(targetNode.tasks) ? targetNode.tasks : [];
+  const fromIndex = sourceNode.tasks.findIndex((task) => task.id === taskId);
+  if (fromIndex < 0) return null;
+  const [task] = sourceNode.tasks.splice(fromIndex, 1);
+  targetNode.tasks.push(task);
+  return { task, sourceNode, targetNode };
 }
 
 function refreshSeriesOrder(task) {
@@ -1780,6 +1929,7 @@ function renderThreads() {
     root.append(renderNode(node, depMap));
   }
   refreshQuickCaptureTargets();
+  renderQuickCaptureJumpLink();
 }
 
 function renderNode(node, depMap = null) {
@@ -1909,9 +2059,10 @@ function renderNode(node, depMap = null) {
   tSection.append(el('div', { class: 'subtext' }, 'Tasks'));
   const tList = el('div', { class: 'inline-list' });
   const now = new Date();
-  if (!node.tasks.length) tList.append(el('div', { class: 'empty' }, 'No tasks yet.'));
+  const movingEntries = movingTaskEntries('prepare', node.id);
+  if (!node.tasks.length && !movingEntries.length) tList.append(el('div', { class: 'empty' }, 'No tasks yet.'));
   node.tasks.forEach((t) => {
-    const row = el('div', { class: 'inline-item' });
+    const row = el('div', { class: 'inline-item', 'data-task-id': t.id });
     const top = el('div', { class: 'kv' });
     const label = el('input', { type: 'text', class: 'task-title-input' });
     label.value = t.text;
@@ -1956,6 +2107,11 @@ function renderNode(node, depMap = null) {
     for (let i = 1; i <= 5; i++) pri.append(el('option', { value: String(i) }, i));
     pri.value = String(t.priority || 3);
     pri.addEventListener('change', () => { t.priority = Number(pri.value); store.saveNow(); renderThreads(); });
+    const threadSel = buildTaskThreadSelect(node.id, t, 'prepare', () => {
+      renderThreads();
+      if (!$('#view-review').hidden) onReviewVisibility();
+      if (!$('#view-tasks').hidden) renderTasksPane();
+    });
     const del = el('button', { class: 'btn ghost' }, 'Remove');
     del.addEventListener('click', () => {
       node.tasks = node.tasks.filter(x => x.id !== t.id);
@@ -1968,7 +2124,7 @@ function renderNode(node, depMap = null) {
       avail.hidden = !avail.hidden;
       setTagPanelOpen('prepare', t.id, !avail.hidden);
     });
-    actions.append(taskDrag, pri, availBtn, del);
+    actions.append(taskDrag, pri, threadSel, availBtn, del);
     top.append(label, actions);
     // status tint
     if (t.completed) row.classList.add('status-completed');
@@ -1978,6 +2134,9 @@ function renderNode(node, depMap = null) {
     // Availability controls (Prepare, hidden by default)
     row.append(avail);
     tList.append(row);
+  });
+  movingEntries.forEach((entry) => {
+    tList.append(buildMovingTaskNotice(entry, 'inline'));
   });
   const tAdd = el('div', { class: 'add-row' });
   const tInput = el('input', { type: 'text', placeholder: 'Add task…' });
@@ -2082,7 +2241,15 @@ let reviewState = {
 };
 
 function hasActiveReviewProgress() {
-  return Array.isArray(reviewState.ids) && reviewState.ids.length > 0;
+  const { state } = ensureDailyReviewInData(store.data);
+  return !!state.active && Array.isArray(reviewState.ids) && reviewState.ids.length > 0;
+}
+
+function renderReviewDate() {
+  const dateNode = $('#review-date');
+  if (!dateNode) return;
+  const { state } = ensureDailyReviewInData(store.data);
+  dateNode.textContent = formatDayKeyLabel(state.dayKey);
 }
 
 function syncReviewStateToCurrentNodes() {
@@ -2104,54 +2271,77 @@ function syncReviewStateToCurrentNodes() {
 }
 
 function saveReviewProgress() {
+  const ensured = ensureDailyReviewInData(store.data);
+  if (ensured.reset) {
+    reviewState = { ids: [], idx: 0 };
+    persistSharedStateWithoutHistory();
+    onReviewVisibility();
+    return;
+  }
+  const shared = ensured.state;
+  if (!reviewState.ids.length) {
+    clearReviewProgress();
+    return;
+  }
+  shared.dayKey = dayKeyFromDate(new Date());
+  shared.active = true;
+  shared.idx = Math.max(0, Number(reviewState.idx) || 0);
+  shared.currentId = reviewState.ids[reviewState.idx] || null;
+  persistSharedStateWithoutHistory();
   try {
-    if (!reviewState.ids.length) { localStorage.removeItem(REVIEW_STATE_KEY); return; }
-    const payload = {
+    localStorage.setItem(REVIEW_STATE_KEY, JSON.stringify({
       active: true,
-      idx: reviewState.idx,
-      currentId: reviewState.ids[reviewState.idx] || null,
-    };
-    localStorage.setItem(REVIEW_STATE_KEY, JSON.stringify(payload));
+      dayKey: shared.dayKey,
+      idx: shared.idx,
+      currentId: shared.currentId,
+    }));
   } catch {}
 }
 
 function clearReviewProgress() {
+  const ensured = ensureDailyReviewInData(store.data);
+  if (ensured.state) {
+    ensured.state.active = false;
+    ensured.state.idx = 0;
+    ensured.state.currentId = null;
+  }
+  persistSharedStateWithoutHistory();
   try { localStorage.removeItem(REVIEW_STATE_KEY); } catch {}
 }
 
 function restoreReviewProgressIfAny() {
-  try {
-    const raw = localStorage.getItem(REVIEW_STATE_KEY);
-    if (!raw) return false;
-    const saved = JSON.parse(raw);
-    if (!saved || !saved.active) return false;
-    const nodes = subthreadsForReview();
-    const ids = nodes.map(n => n.id);
-    if (!ids.length) return false;
-    let idx = Math.min(Math.max(0, saved.idx || 0), ids.length - 1);
-    if (saved.currentId) {
-      const j = ids.indexOf(saved.currentId);
-      if (j >= 0) idx = j;
-    }
-    reviewState = { ids, idx };
-    // ensure review view visible
-    switchView('review');
-    const summary = $('#review-summary');
-    if (summary) summary.hidden = true;
-    $('#review-empty').hidden = true;
-    $('#review-stage').hidden = false;
-    $('#btn-start-review').hidden = true;
-    renderProgress();
-    renderStoryCard();
-    return true;
-  } catch {
-    return false;
+  const ensured = ensureDailyReviewInData(store.data);
+  if (ensured.changed) persistSharedStateWithoutHistory();
+  renderReviewDate();
+  const saved = ensured.state;
+  if (!saved || !saved.active) return false;
+  const nodes = subthreadsForReview();
+  const ids = nodes.map(n => n.id);
+  if (!ids.length) return false;
+  let idx = Math.min(Math.max(0, Number(saved.idx) || 0), ids.length - 1);
+  if (saved.currentId) {
+    const j = ids.indexOf(saved.currentId);
+    if (j >= 0) idx = j;
   }
+  reviewState = { ids, idx };
+  // ensure review view visible
+  switchView('review');
+  const summary = $('#review-summary');
+  if (summary) summary.hidden = true;
+  $('#review-empty').hidden = true;
+  $('#review-stage').hidden = false;
+  $('#btn-start-review').hidden = true;
+  renderProgress();
+  renderStoryCard();
+  return true;
 }
 
 function startReview() {
   // ensure latest structure is indexed
   recomputeIndexes();
+  const ensured = ensureDailyReviewInData(store.data);
+  if (ensured.changed) persistSharedStateWithoutHistory();
+  renderReviewDate();
   const summary = $('#review-summary');
   if (summary) summary.hidden = true;
   const nodes = subthreadsForReview();
@@ -2160,6 +2350,7 @@ function startReview() {
     $('#review-empty').hidden = false;
     $('#review-stage').hidden = true;
     $('#btn-start-review').hidden = false;
+    clearReviewProgress();
     return;
   }
   $('#review-empty').hidden = true;
@@ -2172,8 +2363,11 @@ function startReview() {
 
 function renderProgress() {
   const bar = $('#story-progress');
+  renderReviewDate();
+  if (!bar) return;
   bar.innerHTML = '';
-  const total = reviewState.ids.length || 1;
+  const total = reviewState.ids.length;
+  if (!total) return;
   for (let i = 0; i < total; i++) {
     const node = findNodeById(store.data.threads, reviewState.ids[i]);
     const root = rootOf(node);
@@ -2183,11 +2377,23 @@ function renderProgress() {
       const prevRoot = rootOf(prevNode);
       if (prevRoot?.id !== root?.id) bar.append(el('div', { class: 'divider' }));
     }
-    const seg = el('div', { class: 'segment' });
+    const seg = el('button', {
+      class: 'segment',
+      type: 'button',
+      'data-idx': String(i),
+      title: `Jump to item ${i + 1}`,
+    });
     seg.style.setProperty('--seg-color', root?.color || 'white');
     const fill = el('div', { class: 'fill' });
     if (i < reviewState.idx) seg.classList.add('done');
     if (i === reviewState.idx) seg.classList.add('current');
+    seg.addEventListener('click', () => {
+      if (i === reviewState.idx) return;
+      reviewState.idx = i;
+      renderProgress();
+      renderStoryCard();
+      saveReviewProgress();
+    });
     seg.append(fill);
     bar.append(seg);
   }
@@ -2272,7 +2478,8 @@ function renderStoryCard() {
   const tasksEl = el('div', { class: 'tasks' });
   const depMap = allTaskRefMap();
   const now = new Date();
-  if (!n.tasks.length) tasksEl.append(el('div', { class: 'empty' }, 'No tasks yet.'));
+  const movingEntries = movingTaskEntries('review', n.id);
+  if (!n.tasks.length && !movingEntries.length) tasksEl.append(el('div', { class: 'empty' }, 'No tasks yet.'));
   for (const t of n.tasks) {
     const stats = seriesStats(t);
     const isSeries = !!stats;
@@ -2326,6 +2533,12 @@ function renderStoryCard() {
         liveTask.priority = Number(pri.value);
       });
     });
+    const threadSel = buildTaskThreadSelect(n.id, t, 'review', () => {
+      renderThreads();
+      renderProgress();
+      renderStoryCard();
+      if (!$('#view-tasks').hidden) renderTasksPane();
+    });
     const delBtn = el('button', { class: 'btn ghost' }, 'Remove');
     delBtn.addEventListener('click', () => {
       const live = findNodeById(store.data.threads, n.id);
@@ -2343,7 +2556,7 @@ function renderStoryCard() {
       avail.hidden = !avail.hidden;
       setTagPanelOpen('review', t.id, !avail.hidden);
     });
-    btns.append(pri, availBtn, delBtn);
+    btns.append(pri, threadSel, availBtn, delBtn);
     const reason = availabilityReason(t, now, null, depMap);
     const tagline = buildTaskTagline(t, reason, {
       quickEdit: {
@@ -2430,6 +2643,9 @@ function renderStoryCard() {
     else item.classList.add('status-blocked');
     tasksEl.append(item);
   }
+  movingEntries.forEach((entry) => {
+    tasksEl.append(buildMovingTaskNotice(entry));
+  });
   // Quick add task in review
   const addT = el('div', { class: 'add-row' });
   const tInput = el('input', { type: 'text', placeholder: 'Add task…' });
@@ -2512,6 +2728,13 @@ function renderReviewSummary() {
 }
 
 function nextStory() {
+  const ensured = ensureDailyReviewInData(store.data);
+  if (ensured.reset) {
+    reviewState = { ids: [], idx: 0 };
+    persistSharedStateWithoutHistory();
+    onReviewVisibility();
+    return;
+  }
   if (reviewState.idx < reviewState.ids.length - 1) {
     reviewState.idx += 1; renderProgress(); renderStoryCard(); saveReviewProgress();
   } else {
@@ -2524,6 +2747,13 @@ function nextStory() {
 }
 
 function prevStory() {
+  const ensured = ensureDailyReviewInData(store.data);
+  if (ensured.reset) {
+    reviewState = { ids: [], idx: 0 };
+    persistSharedStateWithoutHistory();
+    onReviewVisibility();
+    return;
+  }
   if (reviewState.idx > 0) {
     reviewState.idx -= 1; renderProgress(); renderStoryCard(); saveReviewProgress();
   }
@@ -2546,6 +2776,8 @@ async function init() {
   if (!usedFirebase) store.load();
   const gamificationChanged = loadGamificationState();
   if (gamificationChanged) store.saveNow();
+  const reviewSeed = ensureDailyReviewInData(store.data);
+  if (reviewSeed.changed) persistSharedStateWithoutHistory();
   // Normalize, colorize and index
   (store.data.threads || []).forEach(normalizeNode);
   (store.data.pantry?.categories || []).forEach(normalizeCategory);
@@ -2579,15 +2811,39 @@ async function init() {
   $('#tab-pantry').addEventListener('click', () => switchView('pantry'));
   const quickCaptureForm = $('#quick-capture-form');
   const quickCaptureInput = $('#quick-capture-input');
+  const quickCapturePriority = $('#quick-capture-priority');
+  const quickCaptureTag = $('#quick-capture-tag');
   const quickCaptureTarget = $('#quick-capture-target');
   quickCaptureForm?.addEventListener('submit', (e) => {
     e.preventDefault();
     const text = quickCaptureInput?.value || '';
-    quickCaptureTask(text, quickCaptureTarget?.value || null);
+    quickCaptureTask({
+      text,
+      nodeId: quickCaptureTarget?.value || null,
+      priority: quickCapturePriority?.value || uiPrefs.capturePriority,
+      tag: quickCaptureTag?.value || uiPrefs.captureTag,
+    });
     if (quickCaptureInput) quickCaptureInput.value = '';
   });
   quickCaptureTarget?.addEventListener('change', () => {
     uiPrefs.captureNodeId = quickCaptureTarget.value || null;
+    persistUiPrefs();
+  });
+  quickCapturePriority?.addEventListener('change', () => {
+    uiPrefs.capturePriority = clampPriority(quickCapturePriority.value, uiPrefs.capturePriority);
+    persistUiPrefs();
+  });
+  quickCaptureTag?.addEventListener('change', () => {
+    if (quickCaptureTag.value === QUICK_CAPTURE_NEW_TAG) {
+      const created = normalizeTagValue(confirmName('New tag', uiPrefs.captureTag || ''));
+      if (created) {
+        uiPrefs.captureTag = created;
+      }
+      persistUiPrefs();
+      refreshQuickCaptureTagOptions();
+      return;
+    }
+    uiPrefs.captureTag = normalizeTagValue(quickCaptureTag.value || '');
     persistUiPrefs();
   });
   const globalSearch = $('#global-search');
@@ -2644,6 +2900,7 @@ async function init() {
   });
 
   renderThreads();
+  renderQuickCaptureJumpLink();
   onReviewVisibility();
   switchView(uiPrefs.lastView || 'prepare');
   // Pre-render tasks pane if selected later
@@ -2655,6 +2912,10 @@ async function init() {
 }
 
 function switchView(name) {
+  const previousView = uiPrefs.lastView || 'prepare';
+  if (previousView !== name && movingTaskState[previousView]) {
+    clearMovingTasksForView(previousView);
+  }
   const prepare = $('#view-prepare');
   const review = $('#view-review');
   const tasks = $('#view-tasks');
@@ -2686,6 +2947,25 @@ function switchView(name) {
 function onReviewVisibility() {
   const summary = $('#review-summary');
   if (summary) summary.hidden = true;
+  const ensured = ensureDailyReviewInData(store.data);
+  if (ensured.changed) persistSharedStateWithoutHistory();
+  renderReviewDate();
+  const shared = ensured.state;
+  if (shared?.active) {
+    const nodes = subthreadsForReview();
+    const ids = nodes.map((n) => n.id);
+    if (!ids.length) {
+      reviewState = { ids: [], idx: 0 };
+      clearReviewProgress();
+    } else {
+      let idx = Math.min(Math.max(0, Number(shared.idx) || 0), ids.length - 1);
+      if (shared.currentId) {
+        const j = ids.indexOf(shared.currentId);
+        if (j >= 0) idx = j;
+      }
+      reviewState = { ids, idx };
+    }
+  }
   if (hasActiveReviewProgress() && syncReviewStateToCurrentNodes()) {
     $('#review-empty').hidden = true;
     $('#review-stage').hidden = false;
@@ -2738,6 +3018,116 @@ function nodePath(n) {
     cur = pid ? nodeById.get(pid) : null;
   }
   return names.join(' › ');
+}
+
+function allThreadNodes() {
+  return flattenNodes(store.data.threads || []);
+}
+
+function buildTaskThreadSelect(sourceNodeId, task, viewName, onMove) {
+  const currentNode = findNodeById(store.data.threads || [], sourceNodeId);
+  const sel = el('select', { class: 'select-sm task-thread-select', title: 'Move task to thread' });
+  const threads = allThreadNodes();
+  threads.forEach((threadNode) => {
+    const optionLabel = nodePath(threadNode);
+    sel.append(el('option', { value: threadNode.id }, optionLabel));
+  });
+  if (currentNode) sel.value = currentNode.id;
+  sel.addEventListener('change', () => {
+    const targetNodeId = sel.value;
+    if (!targetNodeId || targetNodeId === sourceNodeId) return;
+    const moved = moveTaskToThread(sourceNodeId, task.id, targetNodeId);
+    if (!moved) {
+      sel.value = sourceNodeId;
+      return;
+    }
+    rememberMovingTask(viewName, {
+      taskId: moved.task.id,
+      text: moved.task.text,
+      sourceNodeId: moved.sourceNode.id,
+      sourcePath: nodePath(moved.sourceNode),
+      targetNodeId: moved.targetNode.id,
+      targetName: moved.targetNode.name,
+      targetPath: nodePath(moved.targetNode),
+      priority: moved.task.priority,
+    });
+    recomputeIndexes();
+    persistSharedStateWithoutHistory();
+    if (typeof onMove === 'function') onMove(moved);
+    showToast(`Moving to ${moved.targetNode.name}...`);
+  });
+  return sel;
+}
+
+function findTaskRefById(taskId) {
+  if (!taskId) return null;
+  return flattenTaskRefs().find((ref) => ref.task.id === taskId) || null;
+}
+
+function revealPrepareTask(taskId, fallbackNodeId = null) {
+  const taskRef = findTaskRefById(taskId);
+  const node = taskRef?.node || (fallbackNodeId ? findNodeById(store.data.threads || [], fallbackNodeId) : null);
+  if (!node) return;
+  let cursor = node;
+  while (cursor) {
+    cursor.collapsed = false;
+    const parentId = parentById.get(cursor.id);
+    cursor = parentId ? nodeById.get(parentId) : null;
+  }
+  renderThreads();
+  window.requestAnimationFrame(() => {
+    const row = document.querySelector(`.inline-item[data-task-id="${taskId}"]`);
+    if (!row) return;
+    row.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    row.classList.add('next-step-focus');
+    setTimeout(() => row.classList.remove('next-step-focus'), 1800);
+  });
+}
+
+function renderQuickCaptureJumpLink() {
+  const host = $('#quick-capture-link');
+  if (!host) return;
+  host.innerHTML = '';
+  if (!quickCaptureJumpState?.taskId) {
+    host.hidden = true;
+    return;
+  }
+  const latest = findTaskRefById(quickCaptureJumpState.taskId);
+  if (latest?.node) {
+    quickCaptureJumpState.nodeId = latest.node.id;
+    quickCaptureJumpState.path = nodePath(latest.node);
+    quickCaptureJumpState.text = latest.task.text || quickCaptureJumpState.text;
+  }
+  const jump = el('button', { class: 'capture-jump', type: 'button' });
+  jump.append(
+    el('span', { class: 'capture-jump-title' }, `Open "${quickCaptureJumpState.text}" in Prepare`),
+    el('span', { class: 'capture-jump-meta' }, quickCaptureJumpState.path || '')
+  );
+  jump.addEventListener('click', () => {
+    switchView('prepare');
+    revealPrepareTask(quickCaptureJumpState.taskId, quickCaptureJumpState.nodeId);
+  });
+  host.append(jump);
+  host.hidden = false;
+}
+
+function refreshQuickCaptureTagOptions() {
+  const sel = $('#quick-capture-tag');
+  if (!sel) return;
+  const current = normalizeTagValue(uiPrefs.captureTag || '');
+  const options = uniqTags([].concat(LOCATION_PRESETS, allLocations(), current ? [current] : []));
+  sel.innerHTML = '';
+  sel.append(el('option', { value: '' }, 'No tag'));
+  options.forEach((tag) => {
+    sel.append(el('option', { value: tag }, tag));
+  });
+  sel.append(el('option', { value: QUICK_CAPTURE_NEW_TAG }, '+ Add tag...'));
+  if (current && options.some((tag) => tag.toLowerCase() === current.toLowerCase())) {
+    const actual = options.find((tag) => tag.toLowerCase() === current.toLowerCase()) || current;
+    sel.value = actual;
+  } else {
+    sel.value = '';
+  }
 }
 
 function flattenTaskEntries() {
@@ -3063,19 +3453,35 @@ function ensureInboxNode() {
   return inbox;
 }
 
-function quickCaptureTask(text, nodeId = null) {
-  const raw = (text || '').trim();
+function quickCaptureTask(input, nodeId = null) {
+  const opts = (typeof input === 'object' && input) ? input : null;
+  const raw = normalizeTagValue(opts ? opts.text : input);
   if (!raw) return;
-  let node = nodeId ? findNodeById(store.data.threads, nodeId) : null;
+  const resolvedNodeId = opts ? opts.nodeId : nodeId;
+  let node = resolvedNodeId ? findNodeById(store.data.threads, resolvedNodeId) : null;
   if (!node) node = ensureInboxNode();
-  node.tasks.push(createTask(raw));
+  const task = createTask(raw);
+  task.priority = clampPriority(opts?.priority ?? uiPrefs.capturePriority, 3);
+  const chosenTagRaw = normalizeTagValue(opts?.tag ?? uiPrefs.captureTag);
+  const chosenTag = chosenTagRaw === QUICK_CAPTURE_NEW_TAG ? '' : chosenTagRaw;
+  if (chosenTag) setTaskLocations(task, [chosenTag]);
+  node.tasks.push(task);
   uiPrefs.captureNodeId = node.id;
+  uiPrefs.capturePriority = task.priority;
+  uiPrefs.captureTag = chosenTag;
+  quickCaptureJumpState = {
+    taskId: task.id,
+    text: task.text,
+    nodeId: node.id,
+    path: nodePath(node),
+  };
   persistUiPrefs();
-  store.saveNow();
+  persistSharedStateWithoutHistory();
   recomputeIndexes();
   renderThreads();
+  renderQuickCaptureJumpLink();
   if (!$('#view-tasks').hidden) renderTasksPane();
-  if (!$('#review-stage').hidden) { renderProgress(); renderStoryCard(); }
+  if (!$('#view-review').hidden) onReviewVisibility();
   showToast(`Captured to ${node.name}`);
 }
 
@@ -3093,6 +3499,9 @@ function refreshQuickCaptureTargets() {
   }
   const existing = nodes.find(n => n.id === uiPrefs.captureNodeId) || nodes[0];
   if (existing) sel.value = existing.id;
+  const priority = $('#quick-capture-priority');
+  if (priority) priority.value = String(clampPriority(uiPrefs.capturePriority, 3));
+  refreshQuickCaptureTagOptions();
 }
 
 function searchIndex(query) {
@@ -3395,6 +3804,10 @@ function renderTasksPane() {
   orderedEntries = applyStickyTaskPlacement(orderedEntries);
   const orderIndexByKey = new Map(orderedEntries.map((entry, idx) => [entryKey(entry), idx]));
   entries = buildSeriesDisplayEntries(orderedEntries);
+  const movingTaskIds = new Set(movingTaskEntries('tasks').map((entry) => entry.taskId));
+  if (movingTaskIds.size) {
+    entries = entries.filter((entry) => !movingTaskIds.has(entry.task.id));
+  }
   const viewStats = {
     total: entries.length,
     ready: entries.filter(e => !e.done && e.available).length,
@@ -3816,9 +4229,25 @@ function renderTasksPane() {
     filterPanel.append(moreFilters);
     controls.append(filterPanel);
   }
-  if (!entries.length) {
+  const movingEntries = movingTaskEntries('tasks');
+  if (movingEntries.length) {
+    const movingSection = el('section', { class: 'task-section task-section-moving' });
+    const head = el('div', { class: 'task-section-head' });
+    head.append(el('h3', {}, 'Moving Tasks'));
+    head.append(el('span', { class: 'pill warn' }, `${movingEntries.length}`));
+    movingSection.append(head);
+    movingEntries.forEach((entry) => {
+      movingSection.append(buildMovingTaskNotice(entry));
+    });
+    root.append(movingSection);
+  }
+  if (!entries.length && !movingEntries.length) {
     const msg = stats.total ? 'No tasks in the current view.' : 'No tasks match the current filters.';
     root.append(el('div', { class: 'empty' }, msg));
+    pendingSeriesReveal = null;
+    return;
+  }
+  if (!entries.length) {
     pendingSeriesReveal = null;
     return;
   }
@@ -4058,6 +4487,11 @@ function renderTasksPane() {
       for (let i = 1; i <= 5; i++) pri.append(el('option', { value: String(i) }, i));
       pri.value = String(t.priority || 3);
       pri.addEventListener('change', () => { t.priority = Number(pri.value); store.saveNow(); renderTasksPane(); });
+      const threadSel = buildTaskThreadSelect(n.id, t, 'tasks', () => {
+        renderThreads();
+        if (!$('#view-review').hidden) onReviewVisibility();
+        renderTasksPane();
+      });
       const avail = buildAvailabilityControls(n.id, t.id, () => renderTasksPane());
       avail.hidden = !isTagPanelOpen('tasks', t.id);
       const availBtn = el('button', { class: 'btn ghost' }, 'Tags');
@@ -4075,7 +4509,7 @@ function renderTasksPane() {
         renderProgress();
         if (!$('#review-stage').hidden) renderStoryCard();
       });
-      actions.append(pri, availBtn, del);
+      actions.append(pri, threadSel, availBtn, del);
 
       const contextLine = nodePath(n) + (ref.reason ? ` • ${ref.reason}` : '');
       const ctxEl = el('div', { class: 'ctx' }, contextLine);
@@ -4241,6 +4675,11 @@ function renderTasksPane() {
     for (let i = 1; i <= 5; i++) pri.append(el('option', { value: String(i) }, i));
     pri.value = String(t.priority || 3);
     pri.addEventListener('change', () => { t.priority = Number(pri.value); store.saveNow(); renderTasksPane(); });
+    const threadSel = buildTaskThreadSelect(n.id, t, 'tasks', () => {
+      renderThreads();
+      if (!$('#view-review').hidden) onReviewVisibility();
+      renderTasksPane();
+    });
     const del = el('button', { class: 'btn ghost danger' }, 'Remove');
     del.addEventListener('click', () => {
       if (sub) {
@@ -4269,7 +4708,7 @@ function renderTasksPane() {
       });
       actions.append(pick);
     }
-    actions.append(pri, availBtn, del);
+    actions.append(pri, threadSel, availBtn, del);
     item.append(cb, main, actions);
     // Status tint classes
     if (ref.done) item.classList.add('status-completed');

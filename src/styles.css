@@ -158,7 +158,7 @@ button:focus-visible {
   display: grid;
   grid-template-columns: minmax(0, 1.6fr) minmax(0, 1fr);
   gap: 10px;
-  align-items: center;
+  align-items: start;
   max-width: 1120px;
   margin: 0 auto;
   padding: 10px 16px 12px;
@@ -166,9 +166,43 @@ button:focus-visible {
 
 .quick-capture {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(160px, 230px) auto;
+  grid-template-columns: minmax(0, 1.35fr) minmax(70px, 92px) minmax(120px, 170px) minmax(150px, 230px) auto;
   gap: 8px;
   align-items: center;
+}
+
+.quick-capture-link {
+  grid-column: 1 / -1;
+}
+
+.capture-jump {
+  width: 100%;
+  appearance: none;
+  border: 1px solid color-mix(in srgb, var(--accent) 36%, var(--border));
+  border-radius: 12px;
+  background: linear-gradient(140deg, rgba(83, 194, 255, 0.16), rgba(13, 27, 43, 0.9));
+  color: var(--text);
+  text-align: left;
+  padding: 8px 10px;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 8px;
+  align-items: baseline;
+  cursor: pointer;
+}
+
+.capture-jump:hover {
+  border-color: color-mix(in srgb, var(--accent) 56%, var(--border));
+}
+
+.capture-jump-title {
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.capture-jump-meta {
+  color: var(--subtext);
+  font-size: 12px;
 }
 
 .quick-capture input,
@@ -510,6 +544,17 @@ button:focus-visible {
   background: linear-gradient(180deg, rgba(14, 26, 41, 0.85), rgba(11, 21, 34, 0.84));
 }
 
+.inline-item.next-step-focus {
+  border-color: color-mix(in srgb, var(--accent-2) 68%, var(--border));
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent-2) 42%, transparent);
+}
+
+.inline-item.moving-task {
+  border-style: dashed;
+  border-color: color-mix(in srgb, var(--warn) 64%, var(--border));
+  background: linear-gradient(160deg, rgba(246, 179, 95, 0.16), rgba(13, 25, 39, 0.92));
+}
+
 .inline-item.status-available {
   box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent-2) 38%, transparent);
 }
@@ -585,6 +630,14 @@ button:focus-visible {
   gap: 12px;
 }
 
+.review-date {
+  margin: 4px 0 8px;
+  color: color-mix(in srgb, var(--accent) 62%, #eff7ff 38%);
+  font-size: 13px;
+  font-weight: 700;
+  letter-spacing: 0.01em;
+}
+
 .story-progress {
   display: grid;
   grid-auto-flow: column;
@@ -593,11 +646,24 @@ button:focus-visible {
 }
 
 .segment {
+  appearance: none;
+  border: 0;
+  padding: 0;
   position: relative;
   height: 5px;
   border-radius: 999px;
   overflow: hidden;
   background: rgba(118, 146, 180, 0.22);
+  cursor: pointer;
+}
+
+.segment:hover {
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--accent) 28%, transparent);
+}
+
+.segment:focus-visible {
+  outline: 2px solid color-mix(in srgb, var(--accent) 78%, white 22%);
+  outline-offset: 2px;
 }
 
 .segment .fill {
@@ -761,6 +827,26 @@ button:focus-visible {
   border-radius: 13px;
   background: linear-gradient(180deg, rgba(15, 28, 44, 0.88), rgba(11, 21, 33, 0.88));
   transition: transform 140ms ease, border-color 140ms ease, box-shadow 140ms ease;
+}
+
+.task.moving-task {
+  border-style: dashed;
+  border-color: color-mix(in srgb, var(--warn) 64%, var(--border));
+  background: linear-gradient(160deg, rgba(246, 179, 95, 0.16), rgba(12, 24, 38, 0.9));
+}
+
+.moving-task-title {
+  font-weight: 700;
+  color: #f2fbff;
+}
+
+.moving-task-path {
+  opacity: 0.9;
+  grid-column: 1 / -1;
+}
+
+.moving-pill {
+  text-transform: lowercase;
 }
 
 .task:hover {
@@ -1274,6 +1360,10 @@ button.task-meta-value:hover {
   background: color-mix(in srgb, var(--accent-2) 26%, #20343b);
 }
 
+.task-section-moving .task-section-head h3 {
+  color: color-mix(in srgb, var(--warn) 72%, #ffedd8 28%);
+}
+
 .project-nudge {
   grid-column: 1 / -1;
   display: flex;
@@ -1466,6 +1556,10 @@ button.task-meta-value:hover {
   letter-spacing: 0.02em;
   padding: 7px 9px;
   min-height: 34px;
+}
+
+.task-thread-select {
+  min-width: 132px;
 }
 
 .tasks-controls {
@@ -2212,6 +2306,11 @@ button.pill-btn.add {
 
   .quick-capture {
     grid-template-columns: 1fr;
+  }
+
+  .task-thread-select {
+    min-width: 0;
+    flex: 1 1 150px;
   }
 
   .utility-actions {

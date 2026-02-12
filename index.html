@@ -32,6 +32,14 @@
     <section class="utility-bar" aria-label="Quick tools">
       <form id="quick-capture-form" class="quick-capture" autocomplete="off">
         <input id="quick-capture-input" type="text" placeholder="Quick capture task..." />
+        <select id="quick-capture-priority" title="Capture priority">
+          <option value="1">P1</option>
+          <option value="2">P2</option>
+          <option value="3" selected>P3</option>
+          <option value="4">P4</option>
+          <option value="5">P5</option>
+        </select>
+        <select id="quick-capture-tag" title="Capture tag"></select>
         <select id="quick-capture-target" title="Capture target"></select>
         <button class="btn primary" type="submit">Capture</button>
       </form>
@@ -41,6 +49,7 @@
         <button id="btn-redo" class="btn ghost" type="button" title="Redo (Shift+Cmd/Ctrl+Z)">Redo</button>
       </div>
       <div id="search-results" class="search-results" hidden></div>
+      <div id="quick-capture-link" class="quick-capture-link" hidden></div>
     </section>
 
     <main id="view-prepare" class="view active" aria-labelledby="tab-prepare">
@@ -59,6 +68,7 @@
           <h1>Daily Review</h1>
           <button id="btn-start-review" class="btn primary">Start Review</button>
         </div>
+        <div id="review-date" class="review-date"></div>
         <div id="review-empty" class="empty">No subthreads yet. Add some in Prepare.</div>
         <div id="review-summary" class="review-summary" hidden></div>
         <div id="review-stage" class="review-stage" hidden>
