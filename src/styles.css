@@ -158,7 +158,7 @@ button:focus-visible {
   position: relative;
   z-index: 18;
   display: grid;
-  grid-template-columns: minmax(0, 2.2fr) minmax(380px, 1fr);
+  grid-template-columns: minmax(0, 2.2fr) minmax(320px, 1fr);
   gap: 10px;
   align-items: start;
   max-width: 1280px;
@@ -168,9 +168,14 @@ button:focus-visible {
 
 .quick-capture {
   display: grid;
-  grid-template-columns: minmax(300px, 2.6fr) minmax(68px, 84px) minmax(118px, 156px) minmax(150px, 190px) auto;
+  grid-template-columns: minmax(220px, 2.8fr) minmax(64px, 84px) minmax(102px, 150px) minmax(130px, 190px) auto;
   gap: 8px;
   align-items: center;
+  min-width: 0;
+}
+
+.quick-capture > * {
+  min-width: 0;
 }
 
 .quick-capture-link {
@@ -218,11 +223,16 @@ button:focus-visible {
   justify-content: flex-end;
   align-items: center;
   gap: 8px;
+  min-width: 0;
 }
 
 .utility-actions #global-search {
-  min-width: 280px;
-  flex: 1 1 280px;
+  min-width: 0;
+  flex: 1 1 260px;
+}
+
+.utility-actions .btn {
+  flex: 0 0 auto;
 }
 
 .search-results {
