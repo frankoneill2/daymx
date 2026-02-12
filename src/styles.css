@@ -675,6 +675,42 @@ button:focus-visible {
   min-width: 0;
 }
 
+.task.review-task-card,
+.task.tasks-pane-card {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 9px;
+}
+
+.task-card-headline {
+  width: 100%;
+  display: grid;
+  grid-template-columns: 22px minmax(0, 1fr);
+  gap: 10px;
+  align-items: start;
+}
+
+.task-card-headline > input[type='checkbox'] {
+  margin-top: 6px;
+}
+
+.task-card-controls {
+  width: 100%;
+  display: flex;
+  justify-content: flex-end;
+}
+
+.task-card-controls > .meta {
+  margin-left: auto;
+}
+
+.task.review-task-card .review-task-main,
+.task.tasks-pane-card .task-main {
+  width: 100%;
+  min-width: 0;
+}
+
 .review-task-actions {
   display: grid;
   grid-auto-flow: column;
@@ -1708,7 +1744,10 @@ button.task-meta-value:hover {
 }
 
 .review-series-remove {
-  padding-inline: 8px;
+  width: 30px;
+  min-width: 30px;
+  height: 30px;
+  padding: 0;
 }
 
 .review-series-add {
@@ -2561,6 +2600,10 @@ button.pill-btn.add {
   .review-task-actions .priority-select,
   .card-task-actions .priority-select {
     width: 100%;
+  }
+
+  .task-card-controls {
+    justify-content: flex-start;
   }
 
   .utility-actions {

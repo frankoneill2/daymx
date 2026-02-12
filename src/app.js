@@ -1446,10 +1446,9 @@ function buildReviewSeriesPanel(task, opts = {}) {
       if (typeof opts.onTextChange === 'function') opts.onTextChange(s.id, next);
     });
     const state = el('span', { class: 'review-series-state' }, s.completed ? 'Done' : (rank === stats.activeRank ? 'Do Next' : 'Up Next'));
-    const remove = el('button', { class: 'btn ghost review-series-remove', type: 'button', title: 'Remove step' }, 'Remove');
-    remove.addEventListener('click', () => {
+    const remove = createInlineIconAction('Remove step', () => {
       if (typeof opts.onRemove === 'function') opts.onRemove(s.id);
-    });
+    }, '✕', 'danger review-series-remove');
     row.append(check, rankInput, textInput, state, remove);
     list.append(row);
   });
@@ -2472,6 +2471,12 @@ function renderStoryCard() {
   }
 
   const root = rootOf(n);
+  const rootName = (root?.name || 'Thread').trim();
+  const nodeName = (n?.name || '').trim();
+  const sameScope = !!root && (
+    root.id === n.id ||
+    (rootName && nodeName && rootName.toLowerCase() === nodeName.toLowerCase())
+  );
   card.style.setProperty('--thread-color', root?.color || 'var(--accent)');
 
   // Header
@@ -2481,18 +2486,18 @@ function renderStoryCard() {
   threadLine.append(
     el('div', { class: 'thread-pill' }, [
       el('div', { class: 'thread-avatar' }, initial),
-      root?.name || 'Thread'
+      sameScope ? 'Thread' : (rootName || 'Thread')
     ])
   );
-  const breadcrumb = el('div', { class: 'breadcrumb' }, `${root?.name || ''} › ${n.name}`);
+  const breadcrumb = sameScope ? null : el('div', { class: 'breadcrumb' }, `${rootName} › ${nodeName}`);
   const title = el('div', { class: 'story-title' }, n.name);
   header.append(threadLine);
   header.append(title);
-  header.append(breadcrumb);
+  if (breadcrumb) header.append(breadcrumb);
 
   // Questions
   const qSection = el('div', { class: 'story-section' });
-  qSection.append(el('div', { class: 'subtext section-kicker' }, `${root?.name || 'Thread'} — Questions`));
+  qSection.append(el('div', { class: 'subtext section-kicker' }, sameScope ? 'Questions' : `${rootName} — Questions`));
   if (!n.questions.length) qSection.append(el('div', { class: 'empty' }, 'No questions yet.'));
   for (const q of n.questions) {
     const wrap = el('div', { class: 'inline-item question-inline-row' });
@@ -2532,7 +2537,7 @@ function renderStoryCard() {
 
   // Tasks
   const tSection = el('div', { class: 'story-section' });
-  tSection.append(el('div', { class: 'subtext section-kicker' }, `${root?.name || 'Thread'} — Tasks`));
+  tSection.append(el('div', { class: 'subtext section-kicker' }, sameScope ? 'Tasks' : `${rootName} — Tasks`));
   const tasksEl = el('div', { class: 'tasks' });
   const depMap = allTaskRefMap();
   const now = new Date();
@@ -2542,7 +2547,7 @@ function renderStoryCard() {
     const stats = seriesStats(t);
     const isSeries = !!stats;
     const done = isSeries ? (stats.remaining === 0) : !!t.completed;
-    const item = el('div', { class: 'task' + (done ? ' completed' : '') });
+    const item = el('div', { class: 'task review-task-card' + (done ? ' completed' : '') });
     if (isSeries) item.classList.add('series-task');
     const mutateReviewTask = (updater, options = {}) => {
       const liveNode = findNodeById(store.data.threads, n.id);
@@ -2617,6 +2622,7 @@ function renderStoryCard() {
     main.append(buildTaskStateBadges(t, { now, depMap, done }));
     const reason = availabilityReason(t, now, null, depMap);
     const tagline = buildTaskTagline(t, reason, {
+      includeSeries: false,
       quickEdit: {
         showEmpty: true,
         onDurationCycle: () => {
@@ -2692,7 +2698,11 @@ function renderStoryCard() {
       });
       main.append(breakdown);
     }
-    item.append(cb, main, btns);
+    const headline = el('div', { class: 'task-card-headline' });
+    headline.append(cb, main);
+    const controls = el('div', { class: 'task-card-controls review-task-controls' });
+    controls.append(btns);
+    item.append(headline, controls);
     // Availability controls (Review, hidden by default)
     item.append(avail);
     // Status tint classes
@@ -2804,6 +2814,18 @@ function nextStory() {
   }
 }
 
+function jumpReviewToIndex(nextIdx) {
+  const total = reviewState.ids.length;
+  if (!total) return false;
+  const clamped = Math.max(0, Math.min(total - 1, Number(nextIdx) || 0));
+  if (clamped === reviewState.idx) return false;
+  reviewState.idx = clamped;
+  renderProgress();
+  renderStoryCard();
+  saveReviewProgress();
+  return true;
+}
+
 function prevStory() {
   const ensured = ensureDailyReviewInData(store.data);
   if (ensured.reset) {
@@ -2815,6 +2837,66 @@ function prevStory() {
   if (reviewState.idx > 0) {
     reviewState.idx -= 1; renderProgress(); renderStoryCard(); saveReviewProgress();
   }
+}
+
+function isTextEntryTarget(target) {
+  if (!target) return false;
+  return !!(
+    target.matches?.('input[type="text"], input[type="search"], input[type="number"], input[type="datetime-local"], textarea, select') ||
+    target.isContentEditable
+  );
+}
+
+function isReviewVisible() {
+  const review = $('#view-review');
+  return !!review && !review.hidden;
+}
+
+function handleReviewShortcut(e) {
+  if (!isReviewVisible()) return false;
+  if (isTextEntryTarget(e.target)) return false;
+  if (e.metaKey || e.ctrlKey || e.altKey) return false;
+
+  const startBtn = $('#btn-start-review');
+  const stage = $('#review-stage');
+  const hasStage = !!stage && !stage.hidden && reviewState.ids.length > 0;
+  const key = e.key;
+  const lower = key.toLowerCase();
+
+  if (lower === 's' && startBtn && !startBtn.hidden) {
+    e.preventDefault();
+    startReview();
+    return true;
+  }
+
+  if (!hasStage) return false;
+
+  if (key === 'ArrowRight' || lower === 'n' || lower === 'j') {
+    e.preventDefault();
+    nextStory();
+    return true;
+  }
+  if (key === 'ArrowLeft' || lower === 'p' || lower === 'k') {
+    e.preventDefault();
+    prevStory();
+    return true;
+  }
+  if (key === 'Home') {
+    e.preventDefault();
+    return jumpReviewToIndex(0);
+  }
+  if (key === 'End') {
+    e.preventDefault();
+    return jumpReviewToIndex(reviewState.ids.length - 1);
+  }
+  if (/^[1-9]$/.test(key)) {
+    const idx = Number(key) - 1;
+    if (idx < reviewState.ids.length) {
+      e.preventDefault();
+      return jumpReviewToIndex(idx);
+    }
+  }
+  return false;
 }
 
 // ------------------------------
@@ -2928,12 +3010,8 @@ async function init() {
   $('#btn-undo')?.addEventListener('click', undoChange);
   $('#btn-redo')?.addEventListener('click', redoChange);
   document.addEventListener('keydown', (e) => {
-    const target = e.target;
-    const isTypingField = !!target && (
-      target.matches?.('input[type="text"], input[type="search"], input[type="number"], input[type="datetime-local"], textarea, select') ||
-      target.isContentEditable
-    );
-    if (isTypingField) return;
+    if (handleReviewShortcut(e)) return;
+    if (isTextEntryTarget(e.target)) return;
     const z = e.key.toLowerCase() === 'z';
     const meta = e.metaKey || e.ctrlKey;
     if (meta && z && !e.shiftKey) { e.preventDefault(); undoChange(); }
@@ -4616,6 +4694,7 @@ function renderTasksPane() {
     if (ref.due.state === 'overdue') item.classList.add('due-overdue');
     else if (ref.due.state === 'soon') item.classList.add('due-soon');
     if (ref.archivedAt) item.classList.add('archived');
+    item.classList.add('tasks-pane-card');
     const cb = el('input', { type: 'checkbox' });
     cb.checked = !!ref.done;
     if (sub) {
@@ -4774,7 +4853,11 @@ function renderTasksPane() {
       actions.append(pick);
     }
     actions.append(pri, threadSel, availBtn, del);
-    item.append(cb, main, actions);
+    const headline = el('div', { class: 'task-card-headline' });
+    headline.append(cb, main);
+    const controls = el('div', { class: 'task-card-controls tasks-pane-controls' });
+    controls.append(actions);
+    item.append(headline, controls);
     // Status tint classes
     if (ref.done) item.classList.add('status-completed');
     else if (ref.available) item.classList.add('status-available');
