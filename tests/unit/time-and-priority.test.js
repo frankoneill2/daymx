@@ -23,5 +23,16 @@ describe('time and priority helpers', () => {
   it('builds a stable local day key', () => {
     expect(__test.dayKeyFromDate(new Date(2026, 1, 7, 12, 30, 0))).toBe('2026-02-07');
   });
-});
 
+  it('classifies follow-up timing states', () => {
+    const now = new Date(2026, 1, 7, 12, 0, 0);
+    const overdue = { followUpAt: new Date(2026, 1, 7, 8, 0, 0).toISOString() };
+    const today = { followUpAt: new Date(2026, 1, 7, 18, 0, 0).toISOString() };
+    const upcoming = { followUpAt: new Date(2026, 1, 8, 9, 0, 0).toISOString() };
+
+    expect(__test.followUpStatus(overdue, now).state).toBe('overdue');
+    expect(__test.followUpStatus(today, now).state).toBe('today');
+    expect(__test.followUpStatus(upcoming, now).state).toBe('upcoming');
+    expect(__test.followUpStatus({}, now).state).toBe('none');
+  });
+});

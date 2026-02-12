@@ -1060,6 +1060,19 @@ function dueStatus(task, now = new Date()) {
   return { state: 'upcoming', label: `Due ${due.toLocaleDateString()}` };
 }
 
+function followUpStatus(task, now = new Date()) {
+  const followUp = parseIsoDate(task?.followUpAt);
+  if (!followUp) return { state: 'none', label: '' };
+  if (followUp.getTime() <= now.getTime()) return { state: 'overdue', label: `Follow up overdue ${followUp.toLocaleString()}` };
+  if (dayKeyFromDate(followUp) === dayKeyFromDate(now)) {
+    return {
+      state: 'today',
+      label: `Follow up today ${followUp.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}`,
+    };
+  }
+  return { state: 'upcoming', label: `Follow up ${followUp.toLocaleDateString()}` };
+}
+
 function setTaskCompleted(task, completed, now = new Date()) {
   const wasCompleted = !!task.completed;
   task.completed = !!completed;
@@ -1180,6 +1193,20 @@ function snoozeTask(task, mode, now = new Date()) {
   task.availableAt = at.toISOString();
 }
 
+function nudgeFollowUp(task, days = 2, now = new Date()) {
+  const base = parseIsoDate(task?.followUpAt) || now;
+  const at = new Date(base);
+  at.setDate(at.getDate() + Math.max(1, Number(days) || 2));
+  task.followUpAt = at.toISOString();
+}
+
+function snoozeFollowUp(task, now = new Date()) {
+  const at = new Date(now);
+  at.setDate(at.getDate() + 1);
+  at.setHours(9, 0, 0, 0);
+  task.followUpAt = at.toISOString();
+}
+
 function isTaskAvailable(t, now = new Date(), currentContext = null, depMap = null) {
   if (t.waitingOn && t.waitingOn.trim()) return false;
   if (unresolvedDependencyIds(t, depMap).length) return false;
@@ -1194,13 +1221,21 @@ function isTaskAvailable(t, now = new Date(), currentContext = null, depMap = nu
 }
 
 function availabilityReason(t, now = new Date(), currentContext = null, depMap = null) {
-  if (t.waitingOn && t.waitingOn.trim()) return `Waiting: ${t.waitingOn.trim()}`;
+  const follow = followUpStatus(t, now);
+  if (t.waitingOn && t.waitingOn.trim()) {
+    if (follow.state === 'overdue' || follow.state === 'today') return `Waiting: ${t.waitingOn.trim()} • ${follow.label}`;
+    return `Waiting: ${t.waitingOn.trim()}`;
+  }
   const deps = dependencyNames(t, depMap);
-  if (deps.length) return `Blocked by: ${deps.join(', ')}`;
+  if (deps.length) {
+    if (follow.state === 'overdue' || follow.state === 'today') return `Blocked by: ${deps.join(', ')} • ${follow.label}`;
+    return `Blocked by: ${deps.join(', ')}`;
+  }
   if (t.availableAt) {
     const at = new Date(t.availableAt);
     if (now < at) return `Available ${at.toLocaleString()}`;
   }
+  if (follow.state === 'overdue' || follow.state === 'today') return follow.label;
   if (Array.isArray(t.contexts) && t.contexts.length) {
     if (!currentContext || !t.contexts.includes(currentContext)) return `Context: ${t.contexts.join(', ')}`;
   }
@@ -1317,7 +1352,8 @@ function buildTaskTagline(t, reason = '', opts = {}) {
   const includeSeries = opts.includeSeries !== false;
   const series = includeSeries ? seriesSummary(t) : null;
   const due = dueStatus(t);
-  if ((!showLocation || !locs.length) && (!showDuration || !dur) && !reason && !series && due.state === 'none' && !(quick && quick.showEmpty && (showLocation || showDuration))) return null;
+  const follow = followUpStatus(t);
+  if ((!showLocation || !locs.length) && (!showDuration || !dur) && !reason && !series && due.state === 'none' && follow.state === 'none' && !(quick && quick.showEmpty && (showLocation || showDuration))) return null;
   const line = el('div', { class: 'tagline' });
   if (showLocation && locs.length) {
     if (quick && typeof quick.onLocationCycle === 'function') {
@@ -1349,6 +1385,10 @@ function buildTaskTagline(t, reason = '', opts = {}) {
   if (due.state !== 'none') {
     const cls = due.state === 'overdue' ? 'pill warn' : 'pill tag';
     line.append(el('span', { class: cls }, due.label));
+  }
+  if (follow.state !== 'none') {
+    const cls = follow.state === 'overdue' || follow.state === 'today' ? 'pill warn' : 'pill tag';
+    line.append(el('span', { class: cls }, follow.label));
   }
   if (reason) line.append(el('span', { class: 'pill warn' }, reason));
   return line;
@@ -1571,6 +1611,22 @@ function buildAvailabilityControls(nodeId, taskId, rerender) {
   });
   rowDue.append(dueInput, clearDue);
   avail.append(rowDue);
+
+  // Follow-up date
+  const rowFollow = el('div', { class: 'row' });
+  rowFollow.append(el('div', { class: 'subtext' }, 'Follow up on'));
+  const followInput = el('input', { type: 'datetime-local' });
+  followInput.value = toLocalInputValue(t.followUpAt);
+  followInput.addEventListener('change', () => {
+    updateTask(task => { task.followUpAt = parseLocalDateTime(followInput.value); });
+  });
+  const clearFollow = el('button', { class: 'btn ghost' }, 'Clear');
+  clearFollow.addEventListener('click', () => {
+    followInput.value = '';
+    updateTask(task => { task.followUpAt = null; });
+  });
+  rowFollow.append(followInput, clearFollow);
+  avail.append(rowFollow);
 
   // Contexts
   const row2 = el('div', { class: 'row' });
@@ -3930,6 +3986,28 @@ function renderTasksPane() {
   const focusTaskId = tasksViewState.focusTaskId || null;
   const focusedTaskName = focusTaskId ? (depMap.get(focusTaskId)?.task?.text || 'Project') : '';
   const textNeedle = (tasksViewState.searchText || '').trim().toLowerCase();
+  const followUpEntries = allTaskRefs
+    .map((ref) => {
+      const task = ref.task;
+      if (!task || task.completed) return null;
+      if (!tasksViewState.showArchived && task.archivedAt) return null;
+      const waiting = !!(task.waitingOn && task.waitingOn.trim());
+      const blockedByDeps = unresolvedDependencyIds(task, depMap).length > 0;
+      if (!waiting && !blockedByDeps) return null;
+      const follow = followUpStatus(task, now);
+      if (follow.state !== 'overdue' && follow.state !== 'today') return null;
+      return { ...ref, follow };
+    })
+    .filter(Boolean)
+    .sort((a, b) => {
+      const fa = parseIsoDate(a.task.followUpAt)?.getTime() ?? Infinity;
+      const fb = parseIsoDate(b.task.followUpAt)?.getTime() ?? Infinity;
+      if (fa !== fb) return fa - fb;
+      const pa = Number(a.task.priority) || 3;
+      const pb = Number(b.task.priority) || 3;
+      if (pa !== pb) return pa - pb;
+      return nodePath(a.node).localeCompare(nodePath(b.node));
+    });
 
   const allEntries = flattenTaskEntries();
   const baseFiltered = allEntries.filter((ref) => {
@@ -4510,6 +4588,71 @@ function renderTasksPane() {
     controls.append(filterPanel, stickyBar);
     bindTasksStickyVisibility(stickyBar, filterPanel);
   }
+  const applyFollowUpMutation = (ref, updater) => {
+    updater(ref.task);
+    store.saveNow();
+    renderThreads();
+    if (!$('#review-stage').hidden) {
+      renderProgress();
+      renderStoryCard();
+    }
+    rerenderTasksPaneKeepViewport();
+  };
+  const makeFollowUpCard = (ref) => {
+    const { task: t, node: n, root: r } = ref;
+    const follow = followUpStatus(t, now);
+    const item = el('div', {
+      class: `task followup-task${follow.state === 'overdue' ? ' due-overdue' : ''}`,
+      style: `border-left:6px solid ${r?.color || 'var(--accent)'}`,
+      'data-task-id': t.id,
+    });
+    const pin = el('div');
+    pin.append(el('span', { class: `pill ${follow.state === 'overdue' ? 'warn' : 'tag'}` }, follow.label || 'Follow up'));
+    const main = el('div', { class: 'task-main' });
+    const title = el('div', { class: 'task-title' }, t.text || 'Untitled task');
+    const reason = availabilityReason(t, now, null, depMap);
+    const path = nodePath(n);
+    const contextLine = reason ? `${path} • ${reason}` : path;
+    main.append(title, el('div', { class: 'ctx' }, contextLine));
+    const actions = el('div', { class: 'meta task-actions followup-actions' });
+    const nudgeBtn = el('button', { class: 'btn ghost btn-lite', type: 'button' }, 'Nudged today');
+    nudgeBtn.addEventListener('click', () => {
+      applyFollowUpMutation(ref, (task) => nudgeFollowUp(task, 2, now));
+      showToast('Follow-up nudged +2 days');
+    });
+    const clearWaitBtn = el('button', { class: 'btn ghost btn-lite', type: 'button' }, 'Clear waiting');
+    clearWaitBtn.disabled = !(t.waitingOn && t.waitingOn.trim());
+    clearWaitBtn.addEventListener('click', () => {
+      applyFollowUpMutation(ref, (task) => { task.waitingOn = ''; });
+      showToast('Waiting note cleared');
+    });
+    const snoozeBtn = el('button', { class: 'btn ghost btn-lite', type: 'button' }, 'Snooze');
+    snoozeBtn.addEventListener('click', () => {
+      applyFollowUpMutation(ref, (task) => snoozeFollowUp(task, now));
+      showToast('Follow-up snoozed');
+    });
+    const openBtn = el('button', { class: 'btn ghost btn-lite', type: 'button' }, 'Open task');
+    openBtn.addEventListener('click', () => {
+      tasksViewState.focusTaskId = t.id;
+      tasksViewState.showBlocked = true;
+      saveTasksViewState();
+      renderTasksPane();
+    });
+    actions.append(nudgeBtn, clearWaitBtn, snoozeBtn, openBtn);
+    item.append(pin, main, actions);
+    return item;
+  };
+
+  if (followUpEntries.length) {
+    const followSection = el('section', { class: 'task-section task-section-followups' });
+    const head = el('div', { class: 'task-section-head' });
+    head.append(el('h3', {}, 'Follow-Ups Due'));
+    head.append(el('span', { class: 'pill warn' }, `${followUpEntries.length}`));
+    followSection.append(head);
+    followUpEntries.forEach((entry) => followSection.append(makeFollowUpCard(entry)));
+    root.append(followSection);
+  }
+
   const movingEntries = movingTaskEntries('tasks');
   if (movingEntries.length) {
     const movingSection = el('section', { class: 'task-section task-section-moving' });
@@ -4522,7 +4665,7 @@ function renderTasksPane() {
     });
     root.append(movingSection);
   }
-  if (!entries.length && !movingEntries.length) {
+  if (!entries.length && !movingEntries.length && !followUpEntries.length) {
     const msg = stats.total ? 'No tasks in the current view.' : 'No tasks match the current filters.';
     root.append(el('div', { class: 'empty' }, msg));
     pendingSeriesReveal = null;
@@ -5046,6 +5189,7 @@ if (typeof module !== 'undefined' && module.exports) {
       formatDuration,
       normalizePriorityList,
       dayKeyFromDate,
+      followUpStatus,
       pointsForTaskCompletion,
       setTaskCompleted,
       setSubtaskCompleted,

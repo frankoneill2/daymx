@@ -1644,6 +1644,33 @@ button.task-meta-value:hover {
   color: color-mix(in srgb, var(--warn) 72%, #ffedd8 28%);
 }
 
+.task-section-followups .task-section-head h3 {
+  color: color-mix(in srgb, var(--warn) 78%, #ffead1 22%);
+}
+
+.task-section-followups .task-section-head .pill {
+  border-color: color-mix(in srgb, var(--warn) 64%, var(--border));
+  background: color-mix(in srgb, var(--warn) 22%, #2a1b0f);
+}
+
+.followup-task {
+  align-items: start;
+  grid-template-columns: max-content minmax(0, 1fr) auto;
+  background: linear-gradient(180deg, rgba(28, 31, 28, 0.9), rgba(18, 24, 22, 0.9));
+}
+
+.followup-task .task-main {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.followup-actions {
+  justify-content: flex-end;
+  flex-wrap: wrap;
+  row-gap: 4px;
+}
+
 .project-nudge {
   grid-column: 1 / -1;
   display: flex;

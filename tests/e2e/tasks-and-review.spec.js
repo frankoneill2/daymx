@@ -75,6 +75,58 @@ test.describe('daymx critical flows', () => {
     await expect(page.locator('#tasks-root input.task-title-input[value="P3 task"]')).toHaveCount(0);
   });
 
+  test('shows follow-ups due for blocked tasks even when blocked tasks are hidden', async ({ page }) => {
+    await page.addInitScript(() => {
+      const now = new Date();
+      const overdue = new Date(now.getTime() - 2 * 60 * 60 * 1000).toISOString();
+      window.localStorage.setItem('daymx-unlocked', '1');
+      window.sessionStorage.setItem('daymx-unlocked', '1');
+      window.localStorage.setItem('daymx-data-v1', JSON.stringify({
+        threads: [
+          {
+            id: 'n1',
+            name: 'Admin',
+            enabled: true,
+            collapsed: false,
+            children: [],
+            questions: [],
+            tasks: [
+              {
+                id: 't1',
+                text: 'Wait for insurance callback',
+                priority: 2,
+                completed: false,
+                locations: [],
+                contexts: [],
+                blockedBy: [],
+                waitingOn: 'Insurer',
+                followUpAt: overdue,
+                recurrence: 'none',
+                duration: 5,
+                series: [],
+              },
+            ],
+          },
+        ],
+        pantry: { categories: [] },
+      }));
+      window.localStorage.removeItem('daymx-tasks-view-v2');
+    });
+
+    await page.goto('/');
+    await page.getByRole('tab', { name: 'Tasks' }).click();
+
+    const followups = page.locator('#tasks-root .task-section-followups');
+    await expect(followups).toBeVisible();
+    await expect(followups).toContainText('Follow-Ups Due');
+    await expect(followups).toContainText('Wait for insurance callback');
+
+    await followups.getByRole('button', { name: 'Nudged today' }).first().click();
+
+    await expect(page.locator('#tasks-root .task-section-followups')).toHaveCount(0);
+    await expect(page.locator('#tasks-root .empty')).toContainText('No tasks in the current view.');
+  });
+
   test('reveals the next series step immediately after completing the current one', async ({ page }) => {
     await page.addInitScript(() => {
       window.localStorage.setItem('daymx-unlocked', '1');
