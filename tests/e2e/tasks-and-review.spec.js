@@ -220,6 +220,34 @@ test.describe('daymx critical flows', () => {
     expect(payload.threads.map((n) => n.id)).toEqual(['n2']);
   });
 
+  test('defaults new pantry items to to buy', async ({ page }) => {
+    await page.addInitScript(() => {
+      window.localStorage.setItem('daymx-unlocked', '1');
+      window.sessionStorage.setItem('daymx-unlocked', '1');
+      window.localStorage.setItem('daymx-data-v1', JSON.stringify({
+        threads: [
+          { id: 'n1', name: 'Thread A', enabled: true, collapsed: false, children: [], questions: [], tasks: [] },
+        ],
+        pantry: { categories: [] },
+      }));
+    });
+
+    await page.goto('/');
+    await page.getByRole('tab', { name: 'Pantry' }).click();
+
+    page.once('dialog', (dialog) => dialog.accept('Groceries'));
+    await page.click('#btn-add-category');
+
+    await page.fill('#pantry-prepare-root .add-row input[placeholder="Add item…"]', 'Milk');
+    await page.click('#pantry-prepare-root .add-row .btn.primary');
+
+    const statusValue = await page.locator('#pantry-prepare-root .inline-item .priority-select').first().inputValue();
+    expect(statusValue).toBe('to_buy');
+
+    const payload = await page.evaluate(() => JSON.parse(window.localStorage.getItem('daymx-data-v1')));
+    expect(payload.pantry.categories[0].items[0].status).toBe('to_buy');
+  });
+
   test('shows follow-ups due for blocked tasks even when blocked tasks are hidden', async ({ page }) => {
     await page.addInitScript(() => {
       const now = new Date();

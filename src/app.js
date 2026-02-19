@@ -751,7 +751,7 @@ function createCategory(name = 'Category') {
 }
 
 function createItem(name = 'Item') {
-  return { id: uid('i'), name, status: 'stocked', notes: '' };
+  return { id: uid('i'), name, status: 'to_buy', notes: '' };
 }
 
 function findNodeById(rootList, id) {
