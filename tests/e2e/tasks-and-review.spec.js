@@ -11,6 +11,25 @@ test.describe('daymx critical flows', () => {
     });
   });
 
+  test('opens on Tasks by default', async ({ page }) => {
+    await page.addInitScript(() => {
+      window.localStorage.setItem('daymx-unlocked', '1');
+      window.sessionStorage.setItem('daymx-unlocked', '1');
+      window.localStorage.setItem('daymx-data-v1', JSON.stringify({
+        threads: [
+          { id: 'n1', name: 'Thread A', enabled: true, collapsed: false, children: [], questions: [], tasks: [] },
+        ],
+        pantry: { categories: [] },
+      }));
+    });
+
+    await page.goto('/');
+
+    await expect(page.locator('#view-tasks')).toBeVisible();
+    await expect(page.locator('#view-prepare')).toBeHidden();
+    await expect(page.locator('#tab-tasks')).toHaveClass(/active/);
+  });
+
   test('keeps review progress when navigating away and back', async ({ page }) => {
     await page.addInitScript(() => {
       window.localStorage.setItem('daymx-unlocked', '1');
@@ -65,14 +84,116 @@ test.describe('daymx critical flows', () => {
     await page.goto('/');
     await page.getByRole('tab', { name: 'Tasks' }).click();
 
-    await expect(page.locator('#tasks-root input.task-title-input[value="P1 task"]')).toHaveCount(1);
-    await expect(page.locator('#tasks-root input.task-title-input[value="P3 task"]')).toHaveCount(1);
+    const beforeTitles = await page.locator('#tasks-root .task .task-title-input').evaluateAll((els) => els.map((el) => el.value));
+    expect(beforeTitles).toContain('P1 task');
+    expect(beforeTitles).toContain('P3 task');
 
-    const priorityGroup = page.locator('#tasks-controls .filter-group').filter({ hasText: 'Priority' });
+    await page.locator('.tasks-more-filters summary').click();
+    const priorityGroup = page.locator('.tasks-more-filters .filter-group').filter({ hasText: 'Priority' });
     await priorityGroup.getByRole('button', { name: 'P1' }).click();
 
-    await expect(page.locator('#tasks-root input.task-title-input[value="P1 task"]')).toHaveCount(1);
-    await expect(page.locator('#tasks-root input.task-title-input[value="P3 task"]')).toHaveCount(0);
+    const afterTitles = await page.locator('#tasks-root .task .task-title-input').evaluateAll((els) => els.map((el) => el.value));
+    expect(afterTitles).toContain('P1 task');
+    expect(afterTitles).not.toContain('P3 task');
+  });
+
+  test('filters tasks by selected thread scope', async ({ page }) => {
+    await page.addInitScript(() => {
+      window.localStorage.setItem('daymx-unlocked', '1');
+      window.sessionStorage.setItem('daymx-unlocked', '1');
+      window.localStorage.setItem('daymx-data-v1', JSON.stringify({
+        threads: [
+          {
+            id: 'n1',
+            name: 'Work',
+            enabled: true,
+            collapsed: false,
+            questions: [],
+            tasks: [
+              { id: 't1', text: 'Work root task', priority: 2, completed: false, locations: [], contexts: [], blockedBy: [], waitingOn: '', recurrence: 'none', duration: 5, series: [] },
+            ],
+            children: [
+              {
+                id: 'n1a',
+                name: 'Project X',
+                enabled: true,
+                collapsed: false,
+                questions: [],
+                tasks: [
+                  { id: 't2', text: 'Work child task', priority: 3, completed: false, locations: [], contexts: [], blockedBy: [], waitingOn: '', recurrence: 'none', duration: 5, series: [] },
+                ],
+                children: [],
+              },
+            ],
+          },
+          {
+            id: 'n2',
+            name: 'Home',
+            enabled: true,
+            collapsed: false,
+            questions: [],
+            tasks: [
+              { id: 't3', text: 'Home task', priority: 2, completed: false, locations: [], contexts: [], blockedBy: [], waitingOn: '', recurrence: 'none', duration: 5, series: [] },
+            ],
+            children: [],
+          },
+        ],
+        pantry: { categories: [] },
+      }));
+      window.localStorage.removeItem('daymx-tasks-view-v2');
+    });
+
+    await page.goto('/');
+    await page.getByRole('tab', { name: 'Tasks' }).click();
+
+    await page.locator('.tasks-more-filters summary').click();
+    await page.locator('.task-thread-filter-select').selectOption('n1');
+
+    const titles = await page.locator('#tasks-root .task .task-title-input').evaluateAll((els) => els.map((el) => el.value));
+    expect(titles).toContain('Work root task');
+    expect(titles).toContain('Work child task');
+    expect(titles).not.toContain('Home task');
+  });
+
+  test('moves task to a different thread from task card', async ({ page }) => {
+    await page.addInitScript(() => {
+      window.localStorage.setItem('daymx-unlocked', '1');
+      window.sessionStorage.setItem('daymx-unlocked', '1');
+      window.localStorage.setItem('daymx-data-v1', JSON.stringify({
+        threads: [
+          {
+            id: 'n1',
+            name: 'Thread A',
+            enabled: true,
+            collapsed: false,
+            children: [],
+            questions: [],
+            tasks: [{ id: 't1', text: 'Move me from task card', priority: 3, completed: false, locations: [], contexts: [], blockedBy: [], waitingOn: '', recurrence: 'none', duration: 5, series: [] }],
+          },
+          {
+            id: 'n2',
+            name: 'Thread B',
+            enabled: true,
+            collapsed: false,
+            children: [],
+            questions: [],
+            tasks: [],
+          },
+        ],
+        pantry: { categories: [] },
+      }));
+      window.localStorage.removeItem('daymx-tasks-view-v2');
+    });
+
+    await page.goto('/');
+    await page.getByRole('tab', { name: 'Tasks' }).click();
+    await page.locator('#tasks-root .task[data-task-id="t1"] .task-thread-select').first().selectOption('n2');
+
+    const payload = await page.evaluate(() => JSON.parse(window.localStorage.getItem('daymx-data-v1')));
+    const threadA = payload.threads.find((n) => n.id === 'n1');
+    const threadB = payload.threads.find((n) => n.id === 'n2');
+    expect(threadA.tasks.some((t) => t.id === 't1')).toBe(false);
+    expect(threadB.tasks.some((t) => t.id === 't1')).toBe(true);
   });
 
   test('shows follow-ups due for blocked tasks even when blocked tasks are hidden', async ({ page }) => {
@@ -127,6 +248,49 @@ test.describe('daymx critical flows', () => {
     await expect(page.locator('#tasks-root .empty')).toContainText('No tasks in the current view.');
   });
 
+  test('tracks daily review streak after completing today review', async ({ page }) => {
+    await page.addInitScript(() => {
+      const now = new Date();
+      const y1 = new Date(now);
+      y1.setDate(y1.getDate() - 1);
+      const y2 = new Date(now);
+      y2.setDate(y2.getDate() - 2);
+      const dayKey = (d) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+      window.localStorage.setItem('daymx-unlocked', '1');
+      window.sessionStorage.setItem('daymx-unlocked', '1');
+      window.localStorage.setItem('daymx-data-v1', JSON.stringify({
+        threads: [
+          { id: 'n1', name: 'Thread A', enabled: true, collapsed: false, children: [], questions: [], tasks: [] },
+        ],
+        pantry: { categories: [] },
+        dailyReview: {
+          dayKey: '',
+          active: false,
+          idx: 0,
+          currentId: null,
+          completedDays: {
+            [dayKey(y1)]: true,
+            [dayKey(y2)]: true,
+          },
+        },
+      }));
+    });
+
+    await page.goto('/');
+    await page.getByRole('tab', { name: 'Review' }).click();
+    await page.getByRole('button', { name: 'Start Review' }).click();
+    await page.getByRole('button', { name: 'Next' }).click();
+
+    await expect(page.locator('#review-streak')).toContainText('3 days');
+    const completedToday = await page.evaluate(() => {
+      const payload = JSON.parse(window.localStorage.getItem('daymx-data-v1'));
+      const now = new Date();
+      const key = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
+      return !!payload?.dailyReview?.completedDays?.[key];
+    });
+    expect(completedToday).toBe(true);
+  });
+
   test('reveals the next series step immediately after completing the current one', async ({ page }) => {
     await page.addInitScript(() => {
       window.localStorage.setItem('daymx-unlocked', '1');
@@ -168,15 +332,15 @@ test.describe('daymx critical flows', () => {
     await page.goto('/');
     await page.getByRole('tab', { name: 'Tasks' }).click();
 
-    await expect(page.locator('#tasks-root input.task-title-input[value="Shop for ingredients"]')).toHaveCount(1);
-    await expect(page.locator('#tasks-root input.task-title-input[value="Unpack the car"]')).toHaveCount(0);
+    const projectCard = page.locator('#tasks-root .series-flow-card').first();
+    const beforeSteps = await projectCard.locator('.series-next-text').evaluateAll((els) => els.map((el) => el.value));
+    expect(beforeSteps).toContain('Shop for ingredients');
+    expect(beforeSteps).not.toContain('Unpack the car');
 
-    const stepOneCard = page.locator('#tasks-root .task').filter({
-      has: page.locator('input.task-title-input[value="Shop for ingredients"]'),
-    }).first();
-    await stepOneCard.locator('input[type="checkbox"]').first().check();
+    await projectCard.locator('.series-next-row input[type="checkbox"]').first().click();
 
-    await expect(page.locator('#tasks-root input.task-title-input[value="Unpack the car"]')).toHaveCount(1);
+    const afterSteps = await projectCard.locator('.series-next-text').evaluateAll((els) => els.map((el) => el.value));
+    expect(afterSteps).toContain('Unpack the car');
     await expect(page.locator('#toast')).toContainText('Next step unlocked');
   });
 
@@ -257,7 +421,8 @@ test.describe('daymx critical flows', () => {
 
     await expect(page.locator('#quick-capture-link')).toContainText('Call landlord');
     await page.locator('#quick-capture-link .capture-jump').click();
-    await expect(page.locator('.inline-item[data-task-id] input.task-title-input[value="Call landlord"]')).toHaveCount(1);
+    const prepareTaskTitles = await page.locator('.inline-item[data-task-id] .task-title-input').evaluateAll((els) => els.map((el) => el.value));
+    expect(prepareTaskTitles).toContain('Call landlord');
 
     await page.getByRole('tab', { name: 'Tasks' }).click();
     await page.getByRole('tab', { name: 'Prepare' }).click();
@@ -297,13 +462,16 @@ test.describe('daymx critical flows', () => {
     });
 
     await page.goto('/');
+    await page.getByRole('tab', { name: 'Prepare' }).click();
     await page.locator('.inline-item[data-task-id="t1"] .task-thread-select').selectOption('n2');
     await expect(page.locator('.inline-item.moving-task')).toContainText('moving to Thread B...');
 
     await page.getByRole('tab', { name: 'Tasks' }).click();
-    await expect(page.locator('.task-section-moving')).toContainText('moving to Thread B...');
+    const taskTitles = await page.locator('#tasks-root .task .task-title-input').evaluateAll((els) => els.map((el) => el.value));
+    expect(taskTitles).toContain('Move me');
+    await expect(page.locator('.task-section-moving')).toHaveCount(0);
 
     await page.getByRole('tab', { name: 'Prepare' }).click();
-    await expect(page.locator('.inline-item.moving-task')).toHaveCount(0);
+    await expect(page.locator('.inline-item.moving-task')).toHaveCount(1);
   });
 });

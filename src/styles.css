@@ -838,6 +838,73 @@ button:focus-visible {
   letter-spacing: 0.01em;
 }
 
+.review-streak {
+  margin: 0 0 10px;
+}
+
+.review-streak-card {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  padding: 10px 11px;
+  border: 1px solid color-mix(in srgb, var(--accent) 42%, var(--border));
+  border-radius: 12px;
+  background: linear-gradient(155deg, rgba(83, 194, 255, 0.14), rgba(17, 32, 48, 0.9));
+}
+
+.review-streak-card.complete {
+  border-color: color-mix(in srgb, var(--accent-2) 54%, var(--border));
+  background: linear-gradient(155deg, rgba(77, 224, 164, 0.16), rgba(17, 32, 48, 0.9));
+}
+
+.review-streak-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.review-streak-title {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--subtext);
+  font-weight: 700;
+}
+
+.review-streak-value {
+  font-size: 17px;
+  color: #eff9ff;
+  font-family: 'Space Grotesk', 'Manrope', sans-serif;
+}
+
+.review-streak-meta {
+  font-size: 12px;
+  color: color-mix(in srgb, var(--subtext) 82%, #e7f3ff 18%);
+  font-weight: 600;
+}
+
+.review-streak-strip {
+  display: grid;
+  grid-template-columns: repeat(7, minmax(0, 1fr));
+  gap: 5px;
+}
+
+.review-streak-dot {
+  height: 6px;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--border) 72%, #c8d9ef 28%);
+  opacity: 0.88;
+}
+
+.review-streak-dot.done {
+  background: color-mix(in srgb, var(--accent-2) 78%, #e6fff4 22%);
+}
+
+.review-streak-dot.today {
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--accent) 54%, var(--border));
+}
+
 .story-progress {
   display: grid;
   grid-auto-flow: column;

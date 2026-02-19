@@ -35,4 +35,28 @@ describe('time and priority helpers', () => {
     expect(__test.followUpStatus(upcoming, now).state).toBe('upcoming');
     expect(__test.followUpStatus({}, now).state).toBe('none');
   });
+
+  it('marks review completion and computes streak', () => {
+    const now = new Date(2026, 1, 7, 12, 0, 0);
+    const y1 = new Date(2026, 1, 6, 12, 0, 0);
+    const y2 = new Date(2026, 1, 5, 12, 0, 0);
+    const key = (d) => __test.dayKeyFromDate(d);
+    const data = {
+      dailyReview: {
+        dayKey: key(now),
+        active: false,
+        idx: 0,
+        currentId: null,
+        completedDays: {
+          [key(y1)]: true,
+          [key(y2)]: true,
+        },
+      },
+    };
+    const marked = __test.markDailyReviewCompleted(data, now);
+    expect(marked.changed).toBe(true);
+    const streak = __test.reviewStreakInfo(data.dailyReview, now);
+    expect(streak.streak).toBe(3);
+    expect(streak.todayDone).toBe(true);
+  });
 });

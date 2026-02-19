@@ -20,7 +20,7 @@ const defaultData = () => ({
   threads: [], // array of nodes
   pantry: { categories: [] },
   gamification: { daily: {} },
-  dailyReview: { dayKey: '', active: false, idx: 0, currentId: null },
+  dailyReview: { dayKey: '', active: false, idx: 0, currentId: null, completedDays: {} },
 });
 
 const LOCATION_PRESETS = ['mobile', 'laptop', 'home', 'work'];
@@ -243,7 +243,7 @@ const historyState = {
 let toastTimer = null;
 
 const uiPrefs = {
-  lastView: 'prepare',
+  lastView: 'tasks',
   pantryTab: 'prepare',
   captureNodeId: null,
   capturePriority: 3,
@@ -339,6 +339,23 @@ function formatDayKeyLabel(dayKey) {
   });
 }
 
+function normalizeReviewCompletions(raw) {
+  const out = {};
+  Object.entries(raw || {}).forEach(([key, value]) => {
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(String(key || ''))) return;
+    if (value === false || value == null) return;
+    out[key] = true;
+  });
+  return out;
+}
+
+function previousDayKey(dayKey) {
+  const d = parseDayKey(dayKey);
+  if (!d) return null;
+  d.setDate(d.getDate() - 1);
+  return dayKeyFromDate(d);
+}
+
 function ensureDailyReviewInData(data, now = new Date()) {
   if (!data || typeof data !== 'object') return { dayKey: dayKeyFromDate(now), active: false, idx: 0, currentId: null };
   if (!data.dailyReview || typeof data.dailyReview !== 'object') data.dailyReview = {};
@@ -364,6 +381,14 @@ function ensureDailyReviewInData(data, now = new Date()) {
     state.currentId = null;
     changed = true;
   }
+  const normalizedCompleted = normalizeReviewCompletions(state.completedDays);
+  if (JSON.stringify(normalizedCompleted) !== JSON.stringify(state.completedDays || {})) {
+    state.completedDays = normalizedCompleted;
+    changed = true;
+  } else if (!state.completedDays || typeof state.completedDays !== 'object') {
+    state.completedDays = {};
+    changed = true;
+  }
   if (state.dayKey !== today) {
     state.dayKey = today;
     state.active = false;
@@ -373,6 +398,35 @@ function ensureDailyReviewInData(data, now = new Date()) {
     reset = true;
   }
   return { state, changed, reset };
+}
+
+function reviewStreakInfo(state, now = new Date()) {
+  const today = dayKeyFromDate(now);
+  const completed = normalizeReviewCompletions(state?.completedDays);
+  const todayDone = !!completed[today];
+  let start = today;
+  if (!todayDone) {
+    const yesterday = previousDayKey(today);
+    start = yesterday && completed[yesterday] ? yesterday : today;
+  }
+  let streak = 0;
+  let cursor = start;
+  while (cursor && completed[cursor]) {
+    streak += 1;
+    cursor = previousDayKey(cursor);
+  }
+  const missedToday = !todayDone;
+  return { streak, todayDone, missedToday, completed };
+}
+
+function markDailyReviewCompleted(data, now = new Date()) {
+  const ensured = ensureDailyReviewInData(data, now);
+  const state = ensured.state;
+  const key = dayKeyFromDate(now);
+  if (!state.completedDays || typeof state.completedDays !== 'object') state.completedDays = {};
+  const already = !!state.completedDays[key];
+  state.completedDays[key] = true;
+  return { changed: !already, state };
 }
 
 function persistSharedStateWithoutHistory() {
@@ -2361,11 +2415,44 @@ function hasActiveReviewProgress() {
   return !!state.active && Array.isArray(reviewState.ids) && reviewState.ids.length > 0;
 }
 
+function renderReviewStreak(now = new Date()) {
+  const host = $('#review-streak');
+  if (!host) return;
+  const { state } = ensureDailyReviewInData(store.data, now);
+  const info = reviewStreakInfo(state, now);
+  const streakLabel = `${info.streak} day${info.streak === 1 ? '' : 's'}`;
+  host.innerHTML = '';
+  const card = el('div', { class: `review-streak-card${info.todayDone ? ' complete' : ''}` });
+  const head = el('div', { class: 'review-streak-head' });
+  head.append(
+    el('span', { class: 'review-streak-title' }, 'Review Streak'),
+    el('strong', { class: 'review-streak-value' }, streakLabel)
+  );
+  let metaText = 'Start your streak today';
+  if (info.todayDone) metaText = 'Completed today';
+  else if (info.streak > 0) metaText = 'Complete today to keep it alive';
+  const meta = el('div', { class: 'review-streak-meta' }, metaText);
+  const strip = el('div', { class: 'review-streak-strip', 'aria-hidden': 'true' });
+  for (let i = 6; i >= 0; i--) {
+    const d = new Date(now);
+    d.setDate(d.getDate() - i);
+    const key = dayKeyFromDate(d);
+    const dot = el('span', { class: 'review-streak-dot' });
+    if (info.completed[key]) dot.classList.add('done');
+    if (i === 0) dot.classList.add('today');
+    strip.append(dot);
+  }
+  card.append(head, meta, strip);
+  host.append(card);
+  host.hidden = false;
+}
+
 function renderReviewDate() {
   const dateNode = $('#review-date');
   if (!dateNode) return;
   const { state } = ensureDailyReviewInData(store.data);
   dateNode.textContent = formatDayKeyLabel(state.dayKey);
+  renderReviewStreak();
 }
 
 function syncReviewStateToCurrentNodes() {
@@ -2823,12 +2910,14 @@ function renderReviewSummary() {
     const ds = dueStatus(r.task);
     return ds.state === 'overdue' || ds.state === 'soon';
   }).length;
+  const reviewStreak = reviewStreakInfo(ensureDailyReviewInData(store.data, now).state, now).streak;
   const recs = buildCarryForwardRecommendations(6);
   summary.innerHTML = '';
   const header = el('div', { class: 'summary-header' });
   header.append(el('h2', {}, 'Review Summary'));
   header.append(el('div', { class: 'subtext' }, `${completed}/${total} tasks completed`));
   const metrics = el('div', { class: 'summary-metrics' });
+  metrics.append(el('div', { class: 'summary-metric' }, [`${reviewStreak}`, el('span', {}, 'Streak')]));
   metrics.append(el('div', { class: 'summary-metric' }, [`${blocked}`, el('span', {}, 'Blocked')]));
   metrics.append(el('div', { class: 'summary-metric' }, [`${dueSoon}`, el('span', {}, 'Urgent')]));
   const list = el('div', { class: 'summary-list' });
@@ -2864,8 +2953,13 @@ function nextStory() {
   if (reviewState.idx < reviewState.ids.length - 1) {
     reviewState.idx += 1; renderProgress(); renderStoryCard(); saveReviewProgress();
   } else {
+    const marked = markDailyReviewCompleted(store.data, new Date());
+    if (marked.changed) persistSharedStateWithoutHistory();
+    const streak = reviewStreakInfo(marked.state, new Date()).streak;
+    showToast(`Review streak: ${streak} day${streak === 1 ? '' : 's'}`);
     // End of review: hide stage, show start button and a completion message
     renderReviewSummary();
+    renderReviewDate();
     reviewState = { ids: [], idx: 0 };
     $('#btn-start-review').hidden = false;
     clearReviewProgress();
@@ -3102,7 +3196,7 @@ async function init() {
   renderThreads();
   renderQuickCaptureJumpLink();
   onReviewVisibility();
-  switchView(uiPrefs.lastView || 'prepare');
+  switchView('tasks');
   // Pre-render tasks pane if selected later
   // No-op here; render on switch
   // Restore review if previously active (main), else try pantry review
@@ -3223,6 +3317,17 @@ function nodePath(n) {
 
 function allThreadNodes() {
   return flattenNodes(store.data.threads || []);
+}
+
+function nodeInScope(node, scopeId) {
+  if (!scopeId) return true;
+  let cur = node;
+  while (cur) {
+    if (cur.id === scopeId) return true;
+    const pid = parentById.get(cur.id);
+    cur = pid ? nodeById.get(pid) : null;
+  }
+  return false;
 }
 
 function buildTaskThreadSelect(sourceNodeId, task, viewName, onMove) {
@@ -3535,6 +3640,7 @@ function wireCopyShopping(){
   };
 }
 let tasksViewState = {
+  threadNodeId: null,
   currentContext: 'Any',
   locationTags: [],
   durationMax: null,
@@ -3572,6 +3678,7 @@ function triggerProjectCompletionCue(task) {
 
 function saveTasksViewState() {
   const payload = {
+    threadNodeId: tasksViewState.threadNodeId,
     currentContext: tasksViewState.currentContext,
     locationTags: tasksViewState.locationTags,
     durationMax: tasksViewState.durationMax,
@@ -3591,6 +3698,7 @@ function saveTasksViewState() {
 function loadTasksViewState() {
   const saved = safeJsonParse(localStorage.getItem(TASKS_VIEW_STATE_KEY), null);
   if (!saved || typeof saved !== 'object') return;
+  tasksViewState.threadNodeId = saved.threadNodeId || null;
   tasksViewState.currentContext = saved.currentContext || 'Any';
   tasksViewState.locationTags = uniqTags(saved.locationTags || []);
   tasksViewState.durationMax = normalizeDurationValue(saved.durationMax);
@@ -3979,16 +4087,23 @@ function renderTasksPane() {
   const maxDur = normalizeDurationValue(tasksViewState.durationMax);
   const priSet = new Set(normalizePriorityList(tasksViewState.priorityValues || []));
   const allTaskRefs = flattenTaskRefs();
+  if (tasksViewState.threadNodeId && !nodeById.has(tasksViewState.threadNodeId)) {
+    tasksViewState.threadNodeId = null;
+    saveTasksViewState();
+  }
   if (tasksViewState.focusTaskId && !allTaskRefs.some((r) => r.task.id === tasksViewState.focusTaskId)) {
     tasksViewState.focusTaskId = null;
     saveTasksViewState();
   }
+  const threadNodeId = tasksViewState.threadNodeId || null;
+  const threadFilterName = threadNodeId ? (nodeById.get(threadNodeId) ? nodePath(nodeById.get(threadNodeId)) : '') : '';
   const focusTaskId = tasksViewState.focusTaskId || null;
   const focusedTaskName = focusTaskId ? (depMap.get(focusTaskId)?.task?.text || 'Project') : '';
   const textNeedle = (tasksViewState.searchText || '').trim().toLowerCase();
   const followUpEntries = allTaskRefs
     .map((ref) => {
       const task = ref.task;
+      if (!nodeInScope(ref.node, threadNodeId)) return null;
       if (!task || task.completed) return null;
       if (!tasksViewState.showArchived && task.archivedAt) return null;
       const waiting = !!(task.waitingOn && task.waitingOn.trim());
@@ -4012,6 +4127,7 @@ function renderTasksPane() {
   const allEntries = flattenTaskEntries();
   const baseFiltered = allEntries.filter((ref) => {
     const base = ref.task;
+    const okThread = nodeInScope(ref.node, threadNodeId);
     const okCtx = passesContext(base, ctx);
     const okLoc = locSet.size === 0 || taskLocations(base).some(l => locSet.has(l.toLowerCase()));
     const dur = taskDurationMins(base);
@@ -4028,7 +4144,7 @@ function renderTasksPane() {
     const okSearch = !textNeedle || textHay.includes(textNeedle);
     const archivedAt = ref.kind === 'subtask' ? ref.subtask.archivedAt : base.archivedAt;
     const okArchived = tasksViewState.showArchived ? true : !archivedAt;
-    return okCtx && okLoc && okTime && okPriority && okFocus && okSearch && okArchived;
+    return okThread && okCtx && okLoc && okTime && okPriority && okFocus && okSearch && okArchived;
   });
 
   const enriched = baseFiltered.map((ref) => {
@@ -4151,6 +4267,7 @@ function renderTasksPane() {
       return card;
     };
     const resetAllFilters = () => {
+      tasksViewState.threadNodeId = null;
       tasksViewState.currentContext = 'Any';
       tasksViewState.locationTags = [];
       tasksViewState.durationMax = null;
@@ -4259,6 +4376,7 @@ function renderTasksPane() {
       activeFilters.push({ label, onClear });
     };
     if (textNeedle) addActiveFilter(`Search: ${tasksViewState.searchText}`, () => { tasksViewState.searchText = ''; });
+    if (threadNodeId && threadFilterName) addActiveFilter(`Thread: ${threadFilterName}`, () => { tasksViewState.threadNodeId = null; });
     if (ctx) addActiveFilter(`Context: ${ctx}`, () => { tasksViewState.currentContext = 'Any'; });
     if (focusTaskId) addActiveFilter(`Project: ${focusedTaskName}`, () => { tasksViewState.focusTaskId = null; });
     activePriorities.forEach((p) => {
@@ -4308,7 +4426,8 @@ function renderTasksPane() {
     primaryFilters.append(buildGroup('Active Filters', activeRow));
     filterPanel.append(primaryFilters);
 
-    const advancedActiveCount = (ctx ? 1 : 0)
+    const advancedActiveCount = (threadNodeId ? 1 : 0)
+      + (ctx ? 1 : 0)
       + (focusTaskId ? 1 : 0)
       + activePriorities.length
       + activeLocs.length
@@ -4324,6 +4443,22 @@ function renderTasksPane() {
     const moreSummary = el('summary', {}, moreLabel);
     const moreBody = el('div', { class: 'tasks-more-filters-body' });
     moreFilters.append(moreSummary, moreBody);
+
+    const threadRow = el('div', { class: 'filter-row' });
+    const threadSel = el('select', { class: 'select-sm task-thread-filter-select', 'aria-label': 'Filter by thread' });
+    threadSel.append(el('option', { value: '' }, 'Any thread'));
+    const threadOptions = allThreadNodes().filter(isNodePathEnabled);
+    threadOptions.forEach((threadNode) => {
+      threadSel.append(el('option', { value: threadNode.id }, nodePath(threadNode)));
+    });
+    threadSel.value = threadNodeId && threadOptions.some((n) => n.id === threadNodeId) ? threadNodeId : '';
+    threadSel.addEventListener('change', () => {
+      tasksViewState.threadNodeId = threadSel.value || null;
+      saveTasksViewState();
+      renderTasksPane();
+    });
+    threadRow.append(threadSel);
+    moreBody.append(buildGroup('Thread', threadRow));
 
     const ctxs = allContexts();
     if (ctxs.length) {
@@ -4631,6 +4766,11 @@ function renderTasksPane() {
       applyFollowUpMutation(ref, (task) => snoozeFollowUp(task, now));
       showToast('Follow-up snoozed');
     });
+    const threadSel = buildTaskThreadSelect(n.id, t, 'tasks', () => {
+      renderThreads();
+      if (!$('#view-review').hidden) onReviewVisibility();
+      renderTasksPane();
+    });
     const openBtn = el('button', { class: 'btn ghost btn-lite', type: 'button' }, 'Open task');
     openBtn.addEventListener('click', () => {
       tasksViewState.focusTaskId = t.id;
@@ -4638,7 +4778,7 @@ function renderTasksPane() {
       saveTasksViewState();
       renderTasksPane();
     });
-    actions.append(nudgeBtn, clearWaitBtn, snoozeBtn, openBtn);
+    actions.append(nudgeBtn, clearWaitBtn, snoozeBtn, threadSel, openBtn);
     item.append(pin, main, actions);
     return item;
   };
@@ -5190,6 +5330,8 @@ if (typeof module !== 'undefined' && module.exports) {
       normalizePriorityList,
       dayKeyFromDate,
       followUpStatus,
+      reviewStreakInfo,
+      markDailyReviewCompleted,
       pointsForTaskCompletion,
       setTaskCompleted,
       setSubtaskCompleted,
