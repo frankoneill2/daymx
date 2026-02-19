@@ -1131,7 +1131,21 @@ button:focus-visible {
 
 .task.completed {
   opacity: 0.64;
+}
+
+.task.completed .task-main .task-title-input,
+.task.completed .task-main .task-title {
   text-decoration: line-through;
+  text-decoration-thickness: 1.6px;
+  text-decoration-color: color-mix(in srgb, var(--accent-2) 44%, #9fb7ac 56%);
+}
+
+.task.completed .btn.ghost.danger,
+.task.completed .row-action.danger {
+  opacity: 1;
+  color: color-mix(in srgb, var(--danger) 82%, #ffe5e5 18%);
+  border-color: color-mix(in srgb, var(--danger) 58%, var(--border-soft));
+  background: color-mix(in srgb, var(--danger) 18%, #1f1d2b);
 }
 
 .task.status-available {
