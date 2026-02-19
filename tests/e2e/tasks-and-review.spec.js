@@ -196,6 +196,30 @@ test.describe('daymx critical flows', () => {
     expect(threadB.tasks.some((t) => t.id === 't1')).toBe(true);
   });
 
+  test('deletes a thread from prepare actions', async ({ page }) => {
+    await page.addInitScript(() => {
+      window.localStorage.setItem('daymx-unlocked', '1');
+      window.sessionStorage.setItem('daymx-unlocked', '1');
+      window.localStorage.setItem('daymx-data-v1', JSON.stringify({
+        threads: [
+          { id: 'n1', name: 'Thread A', enabled: true, collapsed: false, children: [], questions: [], tasks: [] },
+          { id: 'n2', name: 'Thread B', enabled: true, collapsed: false, children: [], questions: [], tasks: [] },
+        ],
+        pantry: { categories: [] },
+      }));
+    });
+
+    await page.goto('/');
+    await page.getByRole('tab', { name: 'Prepare' }).click();
+    page.once('dialog', (dialog) => dialog.accept());
+    await page.locator('.node[data-id="n1"] .node-delete-btn').click();
+
+    await expect(page.locator('.node[data-id="n1"]')).toHaveCount(0);
+    await expect(page.locator('.node[data-id="n2"]')).toHaveCount(1);
+    const payload = await page.evaluate(() => JSON.parse(window.localStorage.getItem('daymx-data-v1')));
+    expect(payload.threads.map((n) => n.id)).toEqual(['n2']);
+  });
+
   test('shows follow-ups due for blocked tasks even when blocked tasks are hidden', async ({ page }) => {
     await page.addInitScript(() => {
       const now = new Date();

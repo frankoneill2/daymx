@@ -825,6 +825,41 @@ function findNodeParentInfo(targetId) {
   return null;
 }
 
+function removeNode(nodeId) {
+  const info = findNodeParentInfo(nodeId);
+  if (!info) return false;
+  const target = info.list?.[info.index];
+  if (!target) return false;
+  const removedIds = new Set();
+  const stack = [target];
+  while (stack.length) {
+    const n = stack.pop();
+    if (!n || removedIds.has(n.id)) continue;
+    removedIds.add(n.id);
+    (n.children || []).forEach((child) => stack.push(child));
+  }
+  info.list.splice(info.index, 1);
+  if (tasksViewState?.threadNodeId && removedIds.has(tasksViewState.threadNodeId)) {
+    tasksViewState.threadNodeId = null;
+    saveTasksViewState();
+  }
+  Object.values(movingTaskState || {}).forEach((map) => {
+    if (!(map instanceof Map)) return;
+    for (const [taskId, entry] of map.entries()) {
+      if (!entry) continue;
+      if (removedIds.has(entry.sourceNodeId) || removedIds.has(entry.targetNodeId)) {
+        map.delete(taskId);
+      }
+    }
+  });
+  recomputeIndexes();
+  store.save();
+  renderThreads();
+  if (!$('#view-review').hidden) onReviewVisibility();
+  if (!$('#view-tasks').hidden) renderTasksPane();
+  return true;
+}
+
 function reorderListByIndex(list, fromIndex, targetIndex, placeAfter = false) {
   if (!Array.isArray(list)) return false;
   if (fromIndex < 0 || targetIndex < 0 || fromIndex >= list.length || targetIndex >= list.length) return false;
@@ -2158,6 +2193,21 @@ function renderNode(node, depMap = null) {
     renderThreads();
   });
 
+  const btnDeleteNode = el('button', {
+    class: 'btn ghost danger node-delete-btn',
+    type: 'button',
+    title: 'Delete this thread and all nested content',
+    'aria-label': 'Delete thread',
+  }, 'Delete');
+  btnDeleteNode.addEventListener('click', () => {
+    const label = nodePath(node) || node.name || 'thread';
+    const ok = window.confirm(`Delete "${label}" and all nested subthreads, questions, and tasks? This cannot be undone.`);
+    if (!ok) return;
+    const removed = removeNode(node.id);
+    if (!removed) return;
+    showToast(`Deleted ${node.name || 'thread'}`);
+  });
+
   const enabledToggle = el('label', { class: 'subtext' });
   const en = el('input', { type: 'checkbox' }); en.checked = node.enabled !== false; en.addEventListener('change', ()=>{ node.enabled = en.checked; store.save(); renderThreads(); });
   enabledToggle.append(en, document.createTextNode(' Enabled'));
@@ -2181,7 +2231,7 @@ function renderNode(node, depMap = null) {
   );
   more.append(moreTrigger, morePanel);
 
-  actions.append(dragHandle, btnAddChild, enabledToggle, more);
+  actions.append(dragHandle, btnAddChild, btnDeleteNode, enabledToggle, more);
   header.append(titleWrap, actions);
   container.append(header);
 
