@@ -41,6 +41,7 @@ function safeRequestPath(reqPath) {
   try {
     const decoded = decodeURIComponent(reqPath || '');
     if (decoded.includes('\0')) return null;
+    if (decoded === '/' || decoded === '') return ROOT;
     const resolved = path.resolve(ROOT, '.' + decoded);
     const rootPrefix = ROOT.endsWith(path.sep) ? ROOT : `${ROOT}${path.sep}`;
     if (!resolved.startsWith(rootPrefix)) return null;
