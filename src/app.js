@@ -755,22 +755,26 @@ function createItem(name = 'Item') {
 }
 
 function findNodeById(rootList, id) {
-  const stack = [...rootList];
+  const stack = Array.isArray(rootList) ? [...rootList] : [];
   while (stack.length) {
     const n = stack.pop();
+    if (!n) continue;
     if (n.id === id) return n;
-    stack.push(...n.children);
+    const children = Array.isArray(n.children) ? n.children : [];
+    if (children.length) stack.push(...children);
   }
   return null;
 }
 
 function flattenNodes(rootList) {
   const out = [];
-  const stack = [...rootList];
-  while (stack.length) {
-    const n = stack.shift();
+  const queue = Array.isArray(rootList) ? [...rootList] : [];
+  for (let i = 0; i < queue.length; i++) {
+    const n = queue[i];
+    if (!n) continue;
     out.push(n);
-    if (n.children?.length) stack.unshift(...n.children);
+    const children = Array.isArray(n.children) ? n.children : [];
+    if (children.length) queue.push(...children);
   }
   return out;
 }
@@ -804,7 +808,7 @@ function moveNode(nodeId, delta) {
   const j = index + delta;
   if (j < 0 || j >= list.length) return;
   const tmp = list[index]; list[index] = list[j]; list[j] = tmp;
-  store.save(); renderThreads();
+  store.saveNow(); renderThreads();
 }
 
 function findNodeParentInfo(targetId) {
@@ -853,7 +857,7 @@ function removeNode(nodeId) {
     }
   });
   recomputeIndexes();
-  store.save();
+  store.saveNow();
   renderThreads();
   if (!$('#view-review').hidden) onReviewVisibility();
   if (!$('#view-tasks').hidden) renderTasksPane();
@@ -886,20 +890,6 @@ function moveTaskRelative(nodeId, sourceTaskId, targetTaskId, placeAfter = false
   const fromIndex = node.tasks.findIndex((t) => t.id === sourceTaskId);
   const targetIndex = node.tasks.findIndex((t) => t.id === targetTaskId);
   return reorderListByIndex(node.tasks, fromIndex, targetIndex, placeAfter);
-}
-
-function moveTaskToThread(sourceNodeId, taskId, targetNodeId) {
-  const sourceNode = findNodeById(store.data.threads || [], sourceNodeId);
-  const targetNode = findNodeById(store.data.threads || [], targetNodeId);
-  if (!sourceNode || !targetNode) return null;
-  if (sourceNode.id === targetNode.id) return null;
-  sourceNode.tasks = Array.isArray(sourceNode.tasks) ? sourceNode.tasks : [];
-  targetNode.tasks = Array.isArray(targetNode.tasks) ? targetNode.tasks : [];
-  const fromIndex = sourceNode.tasks.findIndex((task) => task.id === taskId);
-  if (fromIndex < 0) return null;
-  const [task] = sourceNode.tasks.splice(fromIndex, 1);
-  targetNode.tasks.push(task);
-  return { task, sourceNode, targetNode };
 }
 
 function refreshSeriesOrder(task) {
@@ -1188,35 +1178,52 @@ function setSubtaskCompleted(task, subtask, completed, now = new Date()) {
   }
   const stats = seriesStats(task);
   if (!stats) return;
-  if (stats.remaining > 0) {
-    task.completed = false;
-    task.completedAt = null;
-    task.archivedAt = null;
-    task.nextRecurringAt = null;
+  if (stats.remaining === 0) {
+    setTaskCompleted(task, true, now);
+    return;
+  }
+  task.completed = false;
+  task.completedAt = null;
+  task.archivedAt = null;
+  task.nextRecurringAt = null;
+}
+
+function resetTaskForRecurring(task) {
+  task.completed = false;
+  task.completedAt = null;
+  task.archivedAt = null;
+  task.nextRecurringAt = null;
+  task.completionPointsAwardedAt = null;
+  if (isSeriesTask(task)) {
+    task.series.forEach((s) => {
+      s.completed = false;
+      s.completedAt = null;
+      s.archivedAt = null;
+    });
   }
 }
 
-function allTaskRefMap() {
-  const map = new Map();
-  flattenTaskRefs().forEach(ref => map.set(ref.task.id, ref));
-  return map;
+function preserveTaskCompletionTracking(task) {
+  if (!task || typeof task !== 'object') return;
+  if (!Array.isArray(task.series)) task.series = [];
+  if (task.completed && !task.completionPointsAwardedAt) {
+    task.completionPointsAwardedAt = task.completedAt || nowIso();
+  }
 }
 
-function unresolvedDependencyIds(task, refs = null) {
-  const ids = Array.isArray(task?.blockedBy) ? task.blockedBy : [];
-  if (!ids.length) return [];
-  const map = refs || allTaskRefMap();
-  return ids.filter((id) => {
-    const dep = map.get(id)?.task;
-    return dep && !dep.completed;
-  });
-}
-
-function dependencyNames(task, refs = null) {
-  const map = refs || allTaskRefMap();
-  const ids = unresolvedDependencyIds(task, map);
-  if (!ids.length) return [];
-  return ids.map(id => map.get(id)?.task?.text || 'Dependency');
+function moveTaskToThread(sourceNodeId, taskId, targetNodeId) {
+  const sourceNode = findNodeById(store.data.threads || [], sourceNodeId);
+  const targetNode = findNodeById(store.data.threads || [], targetNodeId);
+  if (!sourceNode || !targetNode) return null;
+  if (sourceNode.id === targetNode.id) return null;
+  sourceNode.tasks = Array.isArray(sourceNode.tasks) ? sourceNode.tasks : [];
+  targetNode.tasks = Array.isArray(targetNode.tasks) ? targetNode.tasks : [];
+  const fromIndex = sourceNode.tasks.findIndex((task) => task.id === taskId);
+  if (fromIndex < 0) return null;
+  const [task] = sourceNode.tasks.splice(fromIndex, 1);
+  preserveTaskCompletionTracking(task);
+  targetNode.tasks.push(task);
+  return { task, sourceNode, targetNode };
 }
 
 function runRecurringTasks(now = new Date()) {
@@ -1225,18 +1232,7 @@ function runRecurringTasks(now = new Date()) {
     if (!task.recurrence || task.recurrence === 'none' || !task.nextRecurringAt) return;
     const due = parseIsoDate(task.nextRecurringAt);
     if (!due || now < due) return;
-    task.completed = false;
-    task.completedAt = null;
-    task.archivedAt = null;
-    task.nextRecurringAt = null;
-    task.completionPointsAwardedAt = null;
-    if (isSeriesTask(task)) {
-      task.series.forEach((s) => {
-        s.completed = false;
-        s.completedAt = null;
-        s.archivedAt = null;
-      });
-    }
+    resetTaskForRecurring(task);
     changed = true;
   });
   return changed;
@@ -1266,6 +1262,29 @@ function applyArchivingRules(days = 7, now = new Date()) {
     });
   });
   return changed;
+}
+
+function allTaskRefMap() {
+  const map = new Map();
+  flattenTaskRefs().forEach(ref => map.set(ref.task.id, ref));
+  return map;
+}
+
+function unresolvedDependencyIds(task, refs = null) {
+  const ids = Array.isArray(task?.blockedBy) ? task.blockedBy : [];
+  if (!ids.length) return [];
+  const map = refs || allTaskRefMap();
+  return ids.filter((id) => {
+    const dep = map.get(id)?.task;
+    return dep && !dep.completed;
+  });
+}
+
+function dependencyNames(task, refs = null) {
+  const map = refs || allTaskRefMap();
+  const ids = unresolvedDependencyIds(task, map);
+  if (!ids.length) return [];
+  return ids.map(id => map.get(id)?.task?.text || 'Dependency');
 }
 
 function snoozeTask(task, mode, now = new Date()) {
@@ -2133,7 +2152,7 @@ function renderNode(node, depMap = null) {
   const header = el('div', { class: 'node-header' });
   const titleWrap = el('div', { class: 'node-title' });
   const caret = el('button', { class: 'btn ghost', title: 'Collapse/Expand' }, node.collapsed ? '▸' : '▾');
-  caret.addEventListener('click', () => { node.collapsed = !node.collapsed; store.save(); renderThreads(); });
+  caret.addEventListener('click', () => { node.collapsed = !node.collapsed; store.saveNow(); renderThreads(); });
   const colorDot = el('span', { style: `display:inline-block;width:10px;height:10px;border-radius:999px;background:${node.color || '#666'};margin-right:6px;vertical-align:middle;` });
   const titleInput = el('input', { type: 'text', class: 'task-title-input' });
   titleInput.value = node.name || 'Untitled';
@@ -2141,7 +2160,7 @@ function renderNode(node, depMap = null) {
     const v = titleInput.value.trim();
     if (!v) { titleInput.value = node.name || 'Untitled'; return; }
     node.name = v;
-    store.save();
+    store.saveNow();
     recomputeIndexes();
     renderThreads();
   });
@@ -2188,7 +2207,7 @@ function renderNode(node, depMap = null) {
     const name = confirmName('New subthread name', '');
     if (!name) return;
     node.children.push(createNode(name));
-    store.save();
+    store.saveNow();
     recomputeIndexes();
     renderThreads();
   });
@@ -2209,7 +2228,7 @@ function renderNode(node, depMap = null) {
   });
 
   const enabledToggle = el('label', { class: 'subtext' });
-  const en = el('input', { type: 'checkbox' }); en.checked = node.enabled !== false; en.addEventListener('change', ()=>{ node.enabled = en.checked; store.save(); renderThreads(); });
+  const en = el('input', { type: 'checkbox' }); en.checked = node.enabled !== false; en.addEventListener('change', ()=>{ node.enabled = en.checked; store.saveNow(); renderThreads(); });
   enabledToggle.append(en, document.createTextNode(' Enabled'));
 
   const more = el('details', { class: 'node-menu' });
@@ -2251,11 +2270,11 @@ function renderNode(node, depMap = null) {
     const top = el('div', { class: 'kv' });
     const label = el('input', { type: 'text', class: 'task-title-input' });
     label.value = q.text;
-    label.addEventListener('change', () => { q.text = label.value.trim() || q.text; store.save(); });
+    label.addEventListener('change', () => { q.text = label.value.trim() || q.text; store.saveNow(); });
     const actions = el('div', { class: 'row-actions' });
     const del = createInlineIconAction('Remove question', () => {
       node.questions = node.questions.filter(x => x.id !== q.id);
-      store.save(); renderThreads();
+      store.saveNow(); renderThreads();
     }, '✕', 'danger');
     actions.append(del);
     top.append(label, actions);
@@ -2268,7 +2287,7 @@ function renderNode(node, depMap = null) {
   qBtn.addEventListener('click', () => {
     const t = qInput.value.trim(); if (!t) return;
     node.questions.push(createQuestion(t)); qInput.value = '';
-    store.save(); renderThreads();
+    store.saveNow(); renderThreads();
   });
   qAdd.append(qInput, qBtn);
   qSection.append(qList, qAdd);
@@ -2334,7 +2353,7 @@ function renderNode(node, depMap = null) {
     });
     const del = createInlineIconAction('Remove task', () => {
       node.tasks = node.tasks.filter(x => x.id !== t.id);
-      store.save(); renderThreads();
+      store.saveNow(); renderThreads();
     }, '✕', 'danger');
     const avail = buildAvailabilityControls(node.id, t.id, () => renderThreads());
     avail.hidden = !isTagPanelOpen('prepare', t.id);
@@ -2364,7 +2383,7 @@ function renderNode(node, depMap = null) {
   tBtn.addEventListener('click', () => {
     const txt = tInput.value.trim(); if (!txt) return;
     node.tasks.push(createTask(txt)); tInput.value = '';
-    store.save(); renderThreads();
+    store.saveNow(); renderThreads();
   });
   tAdd.append(tInput, tBtn);
   tSection.append(tList, tAdd);
@@ -2391,11 +2410,11 @@ function openQuestionsModal(nodeId) {
     const row = el('div', { class: 'inline-item' });
     const ta = el('textarea', { value: q.text });
     ta.value = q.text;
-    ta.addEventListener('input', () => { q.text = ta.value; store.save(); });
+    ta.addEventListener('input', () => { q.text = ta.value; store.saveNow(); });
     const del = el('button', { class: 'btn ghost' }, 'Remove');
     del.addEventListener('click', () => {
       node.questions = node.questions.filter(x => x.id !== q.id);
-      store.save();
+      store.saveNow();
       openQuestionsModal(nodeId);
     });
     row.append(ta, del);
@@ -2408,7 +2427,7 @@ function openQuestionsModal(nodeId) {
   addBtn.addEventListener('click', () => {
     const t = input.value.trim(); if (!t) return;
     node.questions.push(createQuestion(t)); input.value = '';
-    store.save(); openQuestionsModal(nodeId);
+    store.saveNow(); openQuestionsModal(nodeId);
   });
   addRow.append(input, addBtn);
 
@@ -2428,11 +2447,11 @@ function openTasksModal(nodeId) {
     const row = el('div', { class: 'inline-item' });
     const text = el('input', { type: 'text' });
     text.value = t.text;
-    text.addEventListener('input', () => { t.text = text.value; store.save(); });
+    text.addEventListener('input', () => { t.text = text.value; store.saveNow(); });
     const del = el('button', { class: 'btn ghost' }, 'Remove');
     del.addEventListener('click', () => {
       node.tasks = node.tasks.filter(x => x.id !== t.id);
-      store.save(); openTasksModal(nodeId);
+      store.saveNow(); openTasksModal(nodeId);
     });
     row.append(text, del);
     list.append(row);
@@ -2444,7 +2463,7 @@ function openTasksModal(nodeId) {
   addBtn.addEventListener('click', () => {
     const t = input.value.trim(); if (!t) return;
     node.tasks.push(createTask(t)); input.value = '';
-    store.save(); openTasksModal(nodeId);
+    store.saveNow(); openTasksModal(nodeId);
   });
   addRow.append(input, addBtn);
 
@@ -3141,7 +3160,7 @@ async function init() {
     exam.tasks.push(createTask('Read chapter on cardiology'));
     store.data.threads.push(fitness, reading, academic);
     autoAssignThreadColors();
-    store.save();
+    store.saveNow();
     recomputeIndexes();
     resetHistoryBaseline();
   }
@@ -3228,7 +3247,7 @@ async function init() {
     // assign color to new top-level thread
     t.color = THREAD_PALETTE[hashName(name) % THREAD_PALETTE.length];
     store.data.threads.push(t);
-    store.save();
+    store.saveNow();
     recomputeIndexes();
     renderThreads();
   });
@@ -4267,10 +4286,21 @@ function renderTasksPane() {
   const jumpToTaskCard = (taskId) => {
     if (!taskId) return false;
     const rawTaskId = String(taskId);
-    const escapedTaskId = (typeof CSS !== 'undefined' && typeof CSS.escape === 'function')
-      ? CSS.escape(rawTaskId)
-      : rawTaskId.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
-    const target = root.querySelector(`.task[data-task-id="${escapedTaskId}"]`);
+    let target = null;
+    if (typeof CSS !== 'undefined' && typeof CSS.escape === 'function') {
+      try {
+        target = root.querySelector(`.task[data-task-id="${CSS.escape(rawTaskId)}"]`);
+      } catch {}
+    }
+    if (!target) {
+      const rows = root.querySelectorAll('.task[data-task-id]');
+      for (const row of rows) {
+        if (row.dataset?.taskId === rawTaskId) {
+          target = row;
+          break;
+        }
+      }
+    }
     if (!target) return false;
     if (!isElementOnScreen(target)) target.scrollIntoView({ behavior: 'smooth', block: 'center' });
     target.classList.add('next-step-focus');
@@ -5118,7 +5148,7 @@ function renderTasksPane() {
       del.addEventListener('click', () => {
         n.tasks = n.tasks.filter((x) => x.id !== t.id);
         if (tasksViewState.focusTaskId === t.id) tasksViewState.focusTaskId = null;
-        store.save();
+        store.saveNow();
         renderTasksPane();
         renderThreads();
         renderProgress();
@@ -5294,10 +5324,10 @@ function renderTasksPane() {
     const del = createInlineIconAction('Remove task', () => {
       if (sub) {
         t.series = (t.series || []).filter(x => x.id !== sub.id);
-        store.save(); renderTasksPane();
+        store.saveNow(); renderTasksPane();
       } else {
         n.tasks = n.tasks.filter(x => x.id !== t.id);
-        store.save(); renderTasksPane(); renderThreads(); renderProgress(); if (!$('#review-stage').hidden) renderStoryCard();
+        store.saveNow(); renderTasksPane(); renderThreads(); renderProgress(); if (!$('#review-stage').hidden) renderStoryCard();
       }
     }, '✕', 'danger');
     const avail = buildAvailabilityControls(n.id, t.id, () => rerenderTasksPaneKeepViewport());
