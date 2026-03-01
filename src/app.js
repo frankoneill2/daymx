@@ -4085,9 +4085,11 @@ function flushPendingSeriesRevealUi() {
 function rerenderTasksPaneKeepViewport() {
   const prevY = window.scrollY;
   renderTasksPane();
-  const maxY = Math.max(0, (document.documentElement?.scrollHeight || 0) - window.innerHeight);
-  const nextY = Math.max(0, Math.min(prevY, maxY));
-  if (Math.abs(window.scrollY - nextY) > 1) window.scrollTo(0, nextY);
+  requestAnimationFrame(() => {
+    const maxY = Math.max(0, (document.documentElement?.scrollHeight || 0) - window.innerHeight);
+    const nextY = Math.max(0, Math.min(prevY, maxY));
+    if (Math.abs(window.scrollY - nextY) > 1) window.scrollTo(0, nextY);
+  });
 }
 
 function clearTasksStickyVisibilitySync() {
@@ -4736,7 +4738,7 @@ function renderTasksPane() {
         });
         locInput.value = '';
         store.saveNow();
-        renderTasksPane();
+        rerenderTasksPaneKeepViewport();
         showToast('Tags updated');
       });
       const delBtn = el('button', { class: 'btn ghost' }, 'Remove');
