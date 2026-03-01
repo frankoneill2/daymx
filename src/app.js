@@ -1378,6 +1378,15 @@ function el(tag, props = {}, children = []) {
   return node;
 }
 
+function bindEnterToButton(input, btn) {
+  if (!input || !btn) return;
+  input.addEventListener('keydown', (e) => {
+    if (e.key !== 'Enter') return;
+    e.preventDefault();
+    btn.click();
+  });
+}
+
 function confirmName(promptText, initial = '') {
   const name = window.prompt(promptText, initial);
   if (!name) return null;
@@ -2380,6 +2389,7 @@ function renderNode(node, depMap = null) {
   const tAdd = el('div', { class: 'add-row' });
   const tInput = el('input', { type: 'text', placeholder: 'Add task…' });
   const tBtn = el('button', { class: 'btn primary' }, 'Add');
+  bindEnterToButton(tInput, tBtn);
   tBtn.addEventListener('click', () => {
     const txt = tInput.value.trim(); if (!txt) return;
     node.tasks.push(createTask(txt)); tInput.value = '';
@@ -2460,6 +2470,7 @@ function openTasksModal(nodeId) {
   const addRow = el('div', { class: 'add-row' });
   const input = el('input', { type: 'text', placeholder: 'Add task…' });
   const addBtn = el('button', { class: 'btn primary' }, 'Add');
+  bindEnterToButton(input, addBtn);
   addBtn.addEventListener('click', () => {
     const t = input.value.trim(); if (!t) return;
     node.tasks.push(createTask(t)); input.value = '';
@@ -2932,6 +2943,7 @@ function renderStoryCard() {
   const addT = el('div', { class: 'add-row' });
   const tInput = el('input', { type: 'text', placeholder: 'Add task…' });
   const tBtn = el('button', { class: 'btn' }, 'Add');
+  bindEnterToButton(tInput, tBtn);
   tBtn.addEventListener('click', () => {
     const t = tInput.value.trim(); if (!t) return;
     const live = findNodeById(store.data.threads, n.id);
