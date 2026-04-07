@@ -221,6 +221,13 @@ function setTaskLocations(t, locations) {
   t.loc = list[0] || '';
 }
 
+function inheritTaskCreationDefaults(task, sourceTask = null) {
+  if (!task || !sourceTask) return task;
+  task.contexts = uniqTags(sourceTask.contexts || []);
+  setTaskLocations(task, taskLocations(sourceTask));
+  return task;
+}
+
 function taskDurationMins(t) {
   return normalizeDurationValue(t?.duration);
 }
@@ -1164,6 +1171,7 @@ function addSubtaskToTask(task, text, rank = null, now = new Date()) {
   if (!label) return null;
   const resolvedRank = rank == null ? nextSeriesRank(task) : Math.max(1, Number(rank) || 1);
   const item = createSubtask(label, resolvedRank);
+  inheritTaskCreationDefaults(item, task);
   const list = Array.isArray(task.children) ? task.children : [];
   const insertAt = Math.max(0, Math.min(list.length, resolvedRank - 1));
   list.splice(insertAt, 0, item);
@@ -1232,6 +1240,7 @@ function addChildTask(parentTaskId, text, index = null, now = new Date()) {
   const label = String(text || '').trim();
   if (!label) return null;
   const task = createSubtask(label, (index == null ? taskChildList(parent).length : index) + 1);
+  inheritTaskCreationDefaults(task, parent);
   const list = taskChildList(parent);
   insertTaskIntoList(list, task, index);
   parent.children = list;
@@ -1248,6 +1257,7 @@ function addSiblingTask(taskId, text, placeAfter = true, now = new Date()) {
   const label = String(text || '').trim();
   if (!info || !label) return null;
   const task = info.parentTask ? createSubtask(label) : createTask(label);
+  inheritTaskCreationDefaults(task, info.parentTask || info.ref?.task);
   const offset = placeAfter ? 1 : 0;
   insertTaskIntoList(info.list, task, info.index + offset);
   if (info.parentTask) {
@@ -3736,6 +3746,7 @@ function switchView(name) {
   }
   if (previousView === 'tasks' && previousView !== name) {
     deferredCompletedTaskIds.clear();
+    transientTaskVisibilityIds.clear();
   }
   const prepare = $('#view-prepare');
   const review = $('#view-review');
@@ -4204,6 +4215,7 @@ let recentProjectCompletionTimer = null;
 let tasksStickyVisibilityCleanup = null;
 const stickyDoneTaskAnchors = new Map();
 const collapsedTaskTrees = new Set();
+const transientTaskVisibilityIds = new Set();
 let taskComposerState = null;
 const deferredCompletedTaskIds = new Set();
 
@@ -4487,6 +4499,40 @@ function isElementOnScreen(node) {
   return rect.top >= 72 && rect.bottom <= vh - 20;
 }
 
+function findTaskCardElement(taskId, root = document) {
+  if (!taskId || !root) return null;
+  const rawTaskId = String(taskId);
+  let target = null;
+  try {
+    if (typeof CSS !== 'undefined' && typeof CSS.escape === 'function') {
+      target = root.querySelector(`.task[data-task-id="${CSS.escape(rawTaskId)}"]`);
+    }
+  } catch {}
+  if (target) return target;
+  const rows = root.querySelectorAll?.('.task[data-task-id]') || [];
+  for (const row of rows) {
+    if (row.dataset?.taskId === rawTaskId) return row;
+  }
+  return null;
+}
+
+function revealTaskCard(taskId, opts = {}) {
+  const target = findTaskCardElement(taskId);
+  if (!target) return false;
+  const behavior = opts.behavior || 'smooth';
+  const block = opts.block || 'center';
+  if (!opts.preserveIfOnScreen || !isElementOnScreen(target)) {
+    target.scrollIntoView({ behavior, block });
+  }
+  target.classList.add('next-step-focus');
+  setTimeout(() => target.classList.remove('next-step-focus'), 1800);
+  if (opts.focusCheckbox) {
+    const cb = target.querySelector('input[type="checkbox"]');
+    cb?.focus({ preventScroll: true });
+  }
+  return true;
+}
+
 function applyPendingSeriesReveal(entries) {
   return entries;
 }
@@ -4529,10 +4575,20 @@ function flushPendingSeriesRevealUi() {
   pendingSeriesReveal = null;
 }
 
-function rerenderTasksPaneKeepViewport() {
+function rerenderTasksPaneKeepViewport(anchorTaskId = null) {
   const prevY = window.scrollY;
+  const anchor = anchorTaskId ? findTaskCardElement(anchorTaskId) : null;
+  const prevTop = anchor ? anchor.getBoundingClientRect().top : null;
   renderTasksPane();
   requestAnimationFrame(() => {
+    if (anchorTaskId && prevTop != null) {
+      const nextAnchor = findTaskCardElement(anchorTaskId);
+      if (nextAnchor) {
+        const delta = nextAnchor.getBoundingClientRect().top - prevTop;
+        if (Math.abs(delta) > 1) window.scrollBy(0, delta);
+        return;
+      }
+    }
     const maxY = Math.max(0, (document.documentElement?.scrollHeight || 0) - window.innerHeight);
     const nextY = Math.max(0, Math.min(prevY, maxY));
     if (Math.abs(window.scrollY - nextY) > 1) window.scrollTo(0, nextY);
@@ -5939,10 +5995,13 @@ function renderTasksPaneV2() {
   const expandedChildIds = new Set(allTaskRefs
     .filter((ref) => matchStateById.get(ref.task.id)?.base)
     .map((ref) => ref.task.id));
+  transientTaskVisibilityIds.forEach((taskId) => {
+    if (!refById.has(taskId)) transientTaskVisibilityIds.delete(taskId);
+  });
   const visibleById = new Map();
   const markVisible = (task) => {
     const childVisible = taskChildList(task).some((child) => markVisible(child));
-    const visible = directMatchIds.has(task.id) || childVisible;
+    const visible = directMatchIds.has(task.id) || transientTaskVisibilityIds.has(task.id) || childVisible;
     visibleById.set(task.id, visible);
     return visible;
   };
@@ -6003,16 +6062,19 @@ function renderTasksPaneV2() {
   const sortBy = ['priority', 'due', 'path'].includes(tasksViewState.sortBy) ? tasksViewState.sortBy : 'priority';
   const sortRefs = (refs) => refs.slice().sort(sorters[sortBy]);
   const visibleChildRefs = (task) => {
-    const allowedIds = tasksViewState.showHiddenChildren ? expandedChildIds : treeMatchIds;
+    const allowedIds = new Set(tasksViewState.showHiddenChildren ? expandedChildIds : treeMatchIds);
+    transientTaskVisibilityIds.forEach((taskId) => allowedIds.add(taskId));
     return taskChildList(task)
       .map((child) => refById.get(child.id))
       .filter((ref) => ref && allowedIds.has(ref.task.id));
   };
   const hiddenChildRefs = (task) => {
     if (tasksViewState.showHiddenChildren) return [];
+    const allowedIds = new Set(treeMatchIds);
+    transientTaskVisibilityIds.forEach((taskId) => allowedIds.add(taskId));
     return taskChildList(task)
       .map((child) => refById.get(child.id))
-      .filter((ref) => ref && expandedChildIds.has(ref.task.id) && !treeMatchIds.has(ref.task.id));
+      .filter((ref) => ref && expandedChildIds.has(ref.task.id) && !allowedIds.has(ref.task.id));
   };
   const childSummary = (task) => {
     const children = taskChildList(task);
@@ -6082,8 +6144,18 @@ function renderTasksPaneV2() {
       const created = kind === 'sibling' ? addSiblingTask(ref.task.id, text) : addChildTask(ref.task.id, text);
       if (!created) return;
       taskComposerState = null;
+      transientTaskVisibilityIds.add(created.id);
+      if (kind === 'child') collapsedTaskTrees.delete(ref.task.id);
       store.saveNow();
-      rerenderEverywhere();
+      renderThreads();
+      if (!$('#review-stage').hidden) {
+        renderProgress();
+        renderStoryCard();
+      }
+      rerenderTasksPaneKeepViewport(ref.task.id);
+      requestAnimationFrame(() => {
+        revealTaskCard(created.id, { block: 'nearest' });
+      });
       showToast(kind === 'sibling' ? 'Sibling task added' : 'Subtask added');
     };
     bindEnterToButton(input, addBtn);
@@ -6698,6 +6770,7 @@ if (typeof module !== 'undefined' && module.exports) {
       normalizeDurationValue,
       formatDuration,
       normalizePriorityList,
+      inheritTaskCreationDefaults,
       draftTaskPin,
       normalizeTaskPins,
       createLinkPin,
