@@ -1395,6 +1395,8 @@ button:focus-visible {
 }
 
 .task-title-input {
+  display: block;
+  box-sizing: border-box;
   width: 100%;
   min-width: 0;
   border: 1px solid transparent;

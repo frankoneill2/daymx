@@ -1588,20 +1588,46 @@ function bindEnterToButton(input, btn) {
 
 function initTaskTextInput(input) {
   if (!input || input.tagName !== 'TEXTAREA') return;
+  if (input.dataset.taskTextInputReady === '1') return;
+  input.dataset.taskTextInputReady = '1';
+  let raf = 0;
   const syncHeight = () => {
-    input.style.height = 'auto';
+    input.style.height = '0px';
     input.style.height = `${Math.max(34, input.scrollHeight)}px`;
+  };
+  const queueSync = () => {
+    if (raf) cancelAnimationFrame(raf);
+    raf = requestAnimationFrame(() => {
+      raf = 0;
+      syncHeight();
+    });
   };
   input.style.minHeight = '34px';
   input.style.resize = 'none';
   input.style.overflow = 'hidden';
-  input.addEventListener('input', syncHeight);
+  input.style.overflowY = 'hidden';
+  input.addEventListener('input', queueSync);
   input.addEventListener('keydown', (e) => {
     if (e.key !== 'Enter' || e.shiftKey) return;
     e.preventDefault();
     input.blur();
   });
-  syncHeight();
+  input.addEventListener('focus', queueSync);
+  if (typeof ResizeObserver !== 'undefined') {
+    let lastWidth = Math.round(input.getBoundingClientRect().width || 0);
+    const observer = new ResizeObserver(() => {
+      const nextWidth = Math.round(input.getBoundingClientRect().width || 0);
+      if (nextWidth === lastWidth) return;
+      lastWidth = nextWidth;
+      queueSync();
+    });
+    observer.observe(input);
+  }
+  queueSync();
+  requestAnimationFrame(queueSync);
+  if (document?.fonts?.ready && typeof document.fonts.ready.then === 'function') {
+    document.fonts.ready.then(() => queueSync()).catch(() => {});
+  }
 }
 
 function confirmName(promptText, initial = '') {
