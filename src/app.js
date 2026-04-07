@@ -2071,10 +2071,11 @@ function mutateTaskAndRefresh(taskId, updater, rerender, opts = {}) {
   updater(ref.task, ref);
   store.saveNow();
   if (opts.renderThreads) renderThreads();
-  if (!$('#review-stage').hidden) {
+  const reviewVisible = !!$('#review-stage') && !$('#review-stage').hidden;
+  if (reviewVisible) {
     renderProgress();
-    renderStoryCard();
   }
+  if (reviewVisible && typeof rerender !== 'function') renderStoryCard();
   if (typeof rerender === 'function') rerender();
   return true;
 }
@@ -2293,7 +2294,10 @@ function buildAvailabilityControls(nodeId, taskId, rerender) {
   if (!ref.parentTask) {
     const threadSel = buildTaskThreadSelect(ref.node.id, t, currentView, () => {
       renderThreads();
-      if (!$('#view-review').hidden) onReviewVisibility();
+      if (!$('#view-review').hidden) {
+        renderProgress();
+        rerenderReviewStoryKeepViewport(taskId);
+      }
       if (!$('#view-tasks').hidden) renderTasksPane();
     });
     topControls.append(threadSel);
@@ -3188,7 +3192,9 @@ function renderStoryCard() {
     const delBtn = createInlineIconAction('Remove question', () => {
       const live = findNodeById(store.data.threads, n.id);
       live.questions = live.questions.filter(x => x.id !== q.id);
-      store.saveNow(); renderStoryCard(); renderProgress();
+      store.saveNow();
+      renderProgress();
+      rerenderReviewStoryKeepViewport();
     }, '✕', 'danger');
     actions.append(delBtn);
     top.append(label, actions);
@@ -3199,11 +3205,14 @@ function renderStoryCard() {
   const addQ = el('div', { class: 'add-row' });
   const qInput = el('input', { type: 'text', placeholder: 'Add question…' });
   const qBtn = el('button', { class: 'btn' }, 'Add');
+  bindEnterToButton(qInput, qBtn);
   qBtn.addEventListener('click', () => {
     const t = qInput.value.trim(); if (!t) return;
     const live = findNodeById(store.data.threads, n.id);
     live.questions.push(createQuestion(t)); qInput.value = '';
-    store.saveNow(); renderProgress(); renderStoryCard();
+    store.saveNow();
+    renderProgress();
+    rerenderReviewStoryKeepViewport();
   });
   addQ.append(qInput, qBtn);
   qSection.append(addQ);
@@ -3232,8 +3241,14 @@ function renderStoryCard() {
   tBtn.addEventListener('click', () => {
     const t = tInput.value.trim(); if (!t) return;
     const live = findNodeById(store.data.threads, n.id);
-    live.tasks.push(createTask(t)); tInput.value = '';
-    store.saveNow(); renderProgress(); renderStoryCard();
+    const created = createTask(t);
+    live.tasks.push(created);
+    tInput.value = '';
+    store.saveNow();
+    renderThreads();
+    renderProgress();
+    if (!$('#view-tasks').hidden) renderTasksPane();
+    rerenderReviewStoryKeepViewport(null, created.id);
   });
   addT.append(tInput, tBtn);
 
