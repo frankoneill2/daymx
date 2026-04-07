@@ -2590,7 +2590,7 @@ function refreshPreparePrimaryAction() {
 }
 
 function renderThreads() {
-  const token = startViewportPreservation(!!$('#view-prepare') && !$('#view-prepare').hidden);
+  const token = startViewportPreservation(!!$('#view-prepare') && !$('#view-prepare').hidden, $('#view-prepare'));
   try {
     const root = $('#threads-root');
     root.innerHTML = '';
@@ -3143,7 +3143,7 @@ function renderProgress() {
 }
 
 function renderStoryCard() {
-  const token = startViewportPreservation(!!$('#view-review') && !$('#view-review').hidden);
+  const token = startViewportPreservation(!!$('#view-review') && !$('#view-review').hidden, $('#view-review'));
   try {
     const n = findNodeById(store.data.threads, reviewState.ids[reviewState.idx]);
     const card = $('#story-card');
@@ -4138,7 +4138,7 @@ function flattenTaskEntries() {
 // Pantry views
 // ------------------------------
 function renderPantryActiveView() {
-  const token = startViewportPreservation(!!$('#view-pantry') && !$('#view-pantry').hidden);
+  const token = startViewportPreservation(!!$('#view-pantry') && !$('#view-pantry').hidden, $('#view-pantry'));
   try {
     const ptabPrep = $('#ptab-prepare');
     const ptabRev = $('#ptab-review');
@@ -4179,7 +4179,7 @@ function renderPantryActiveView() {
 }
 
 function renderPantryPrepare() {
-  const token = startViewportPreservation(!!$('#view-pantry') && !$('#view-pantry').hidden && !!$('#pantry-prepare') && !$('#pantry-prepare').hidden);
+  const token = startViewportPreservation(!!$('#view-pantry') && !$('#view-pantry').hidden && !!$('#pantry-prepare') && !$('#pantry-prepare').hidden, $('#view-pantry'));
   try {
     const root = $('#pantry-prepare-root');
     root.innerHTML = '';
@@ -4274,7 +4274,7 @@ function startPantryReview(){ const list=pantryFlattenCats(); pantryReviewState=
 function findCategoryById(id){ const stack=[...(store.data.pantry?.categories||[])]; while(stack.length){ const c=stack.pop(); if(c.id===id) return c; (c.children||[]).forEach(x=>stack.push(x)); } return null; }
 function renderPantryProgress(){ const bar=$('#pprogress'); bar.innerHTML=''; const total=pantryReviewState.ids.length||1; for(let i=0;i<total;i++){ const seg=el('div',{class:'segment'}); const fill=el('div',{class:'fill'}); if(i<pantryReviewState.idx) seg.classList.add('done'); if(i===pantryReviewState.idx) seg.classList.add('current'); seg.append(fill); bar.append(seg);} const cur=bar.querySelector('.segment.current .fill'); if(cur) cur.style.setProperty('--w','100%'); }
 function renderPantryCard(){
-  const token = startViewportPreservation(!!$('#view-pantry') && !$('#view-pantry').hidden && !!$('#pantry-review') && !$('#pantry-review').hidden);
+  const token = startViewportPreservation(!!$('#view-pantry') && !$('#view-pantry').hidden && !!$('#pantry-review') && !$('#pantry-review').hidden, $('#view-pantry'));
   try {
     const c=findCategoryById(pantryReviewState.ids[pantryReviewState.idx]); const card=$('#pcard'); card.innerHTML=''; if(!c){ card.append(el('div',{class:'empty'},'Review complete.')); return;} const header=el('div',{class:'story-header'}); header.append(el('div',{class:'story-title'},c.name)); card.append(header); (c.items||[]).forEach(item=>{ const row=el('div',{class:'task'}); row.classList.add(`pantry-${item.status}`); const status=el('select',{class:'priority-select'}); [['to_buy','To buy'],['stocked','Stocked'],['not_needed','Not needed']].forEach(([v,t])=>status.append(el('option',{value:v},t))); status.value=item.status; status.addEventListener('change',()=>{ item.status=status.value; store.saveNow(); renderPantryCard(); }); const title=el('div',{},item.name); const meta=el('div',{class:'meta'}); meta.append(status); row.append(el('div'), title, meta); card.append(row); });
   } finally {
@@ -4296,7 +4296,7 @@ function shoppingItems(){ const out=[]; const cats=pantryFlattenCats(); cats.for
 function needsBuying(item){ return item.status === 'to_buy'; }
 function nodePathLike(n){ const names=[]; let cur=n; const all=pantryFlattenCats(); const parent=new Map(); all.forEach(c=> (c.children||[]).forEach(ch=> parent.set(ch.id,c.id))); while(cur){ names.unshift(cur.name); const pid=parent.get(cur.id); cur = pid ? all.find(c=>c.id===pid) : null; } return names.join(' › '); }
 function renderShoppingList(){
-  const token = startViewportPreservation(!!$('#view-pantry') && !$('#view-pantry').hidden && !!$('#pantry-shopping') && !$('#pantry-shopping').hidden);
+  const token = startViewportPreservation(!!$('#view-pantry') && !$('#view-pantry').hidden && !!$('#pantry-shopping') && !$('#pantry-shopping').hidden, $('#view-pantry'));
   try {
     const root=$('#shopping-root'); if(!root) return; root.innerHTML=''; const arr=shoppingItems().filter(x=>needsBuying(x.item)); if(!arr.length){ root.append(el('div',{class:'empty'},'Nothing to buy.')); return;} const byCat=new Map(); arr.forEach(({cat,item})=>{ const k=nodePathLike(cat); if(!byCat.has(k)) byCat.set(k,[]); byCat.get(k).push({cat,item}); }); for(const [path,list] of byCat.entries()){ root.append(el('div',{class:'subtext'},path)); list.forEach(({cat,item})=>{ const row=el('div',{class:'task'}); row.classList.add('pantry-to_buy'); const cb=el('input',{type:'checkbox'}); cb.checked=false; cb.addEventListener('change',()=>{ if(cb.checked){ item.status='stocked'; store.saveNow(); renderShoppingList(); }}); const main=el('div',{},item.name); const meta=el('div',{class:'meta'}); const del=el('button',{class:'btn ghost'},'Remove'); del.addEventListener('click',()=>{ cat.items=cat.items.filter(x=>x.id!==item.id); store.saveNow(); renderShoppingList(); renderPantryPrepare(); }); meta.append(del); row.append(cb, main, meta); root.append(row); }); }
   } finally {
@@ -4650,11 +4650,42 @@ function isElementOnScreen(node) {
 
 let viewportPreserveDepth = 0;
 
-function startViewportPreservation(active = true) {
+function captureViewportAnchor(root) {
+  if (!root?.querySelectorAll) return null;
+  const candidates = root.querySelectorAll('[data-task-id], .node[data-id]');
+  const vh = window.innerHeight || document.documentElement.clientHeight;
+  for (const node of candidates) {
+    const rect = node.getBoundingClientRect();
+    if (rect.height <= 0 || rect.bottom <= 72 || rect.top >= vh) continue;
+    if (node.dataset?.taskId) return { type: 'task', id: String(node.dataset.taskId), top: rect.top };
+    if (node.dataset?.id) return { type: 'node', id: String(node.dataset.id), top: rect.top };
+  }
+  return null;
+}
+
+function findViewportAnchor(root, anchor) {
+  if (!root || !anchor) return null;
+  if (anchor.type === 'task') return findTaskCardElement(anchor.id, root);
+  if (anchor.type === 'node') {
+    try {
+      if (typeof CSS !== 'undefined' && typeof CSS.escape === 'function') {
+        const escaped = CSS.escape(String(anchor.id));
+        const exact = root.querySelector(`.node[data-id="${escaped}"]`);
+        if (exact) return exact;
+      }
+    } catch {}
+    return Array.from(root.querySelectorAll('.node[data-id]')).find((node) => node.dataset?.id === String(anchor.id)) || null;
+  }
+  return null;
+}
+
+function startViewportPreservation(active = true, root = null) {
   if (!active || typeof window === 'undefined' || typeof document === 'undefined') return null;
   const token = {
     outer: viewportPreserveDepth === 0,
     prevY: window.scrollY,
+    root,
+    anchor: root ? captureViewportAnchor(root) : null,
   };
   viewportPreserveDepth += 1;
   return token;
@@ -4668,6 +4699,15 @@ function finishViewportPreservation(token, restoreFn = null) {
     if (typeof restoreFn === 'function') {
       const handled = restoreFn();
       if (handled !== false) return;
+    }
+    if (token.anchor) {
+      const nextRoot = token.root || document;
+      const nextAnchor = findViewportAnchor(nextRoot, token.anchor);
+      if (nextAnchor) {
+        const delta = nextAnchor.getBoundingClientRect().top - token.anchor.top;
+        if (Math.abs(delta) > 1) window.scrollBy(0, delta);
+        return;
+      }
     }
     const maxY = Math.max(0, (document.documentElement?.scrollHeight || 0) - window.innerHeight);
     const nextY = Math.max(0, Math.min(token.prevY, maxY));
@@ -4753,7 +4793,7 @@ function flushPendingSeriesRevealUi() {
 }
 
 function rerenderTasksPaneKeepViewport(anchorTaskId = null) {
-  const token = startViewportPreservation(true);
+  const token = startViewportPreservation(true, $('#view-tasks'));
   const anchor = anchorTaskId ? findTaskCardElement(anchorTaskId) : null;
   const prevTop = anchor ? anchor.getBoundingClientRect().top : null;
   renderTasksPane();
@@ -4772,7 +4812,7 @@ function rerenderTasksPaneKeepViewport(anchorTaskId = null) {
 
 function rerenderReviewStoryKeepViewport(anchorTaskId = null, revealTaskId = null) {
   const storyRoot = $('#story-card');
-  const token = startViewportPreservation(true);
+  const token = startViewportPreservation(true, $('#view-review'));
   const anchor = anchorTaskId ? findTaskCardElement(anchorTaskId, storyRoot || document) : null;
   const prevTop = anchor ? anchor.getBoundingClientRect().top : null;
   renderStoryCard();
@@ -4839,7 +4879,7 @@ function bindTasksStickyVisibility(stickyBar, filterPanel) {
 }
 
 function renderTasksPane() {
-  const token = startViewportPreservation(!!$('#view-tasks') && !$('#view-tasks').hidden);
+  const token = startViewportPreservation(!!$('#view-tasks') && !$('#view-tasks').hidden, $('#view-tasks'));
   try {
     return renderTasksPaneV2();
   } finally {
