@@ -3397,6 +3397,9 @@ function switchView(name) {
   if (previousView !== name && movingTaskState[previousView]) {
     clearMovingTasksForView(previousView);
   }
+  if (previousView === 'tasks' && previousView !== name) {
+    deferredCompletedTaskIds.clear();
+  }
   const prepare = $('#view-prepare');
   const review = $('#view-review');
   const tasks = $('#view-tasks');
@@ -3865,6 +3868,7 @@ let tasksStickyVisibilityCleanup = null;
 const stickyDoneTaskAnchors = new Map();
 const collapsedTaskTrees = new Set();
 let taskComposerState = null;
+const deferredCompletedTaskIds = new Set();
 
 function triggerProjectCompletionCue(task) {
   if (!task || !task.id) return;
@@ -5609,6 +5613,10 @@ function renderTasksPaneV2() {
 
   const visibleRefs = allTaskRefs.filter((ref) => visibleById.get(ref.task.id));
   selectedTaskKeys = new Set([...selectedTaskKeys].filter((id) => visibleById.get(id)));
+  Array.from(deferredCompletedTaskIds).forEach((taskId) => {
+    const ref = refById.get(taskId);
+    if (!ref || !ref.task.completed) deferredCompletedTaskIds.delete(taskId);
+  });
 
   const stats = {
     total: visibleRefs.length,
@@ -5699,6 +5707,12 @@ function renderTasksPaneV2() {
     }
     renderTasksPane();
   };
+  const rememberDeferredCompletion = (ref, completed) => {
+    const rootTaskId = ref?.rootTask?.id || ref?.task?.id || null;
+    if (!rootTaskId) return;
+    if (completed) deferredCompletedTaskIds.add(rootTaskId);
+    else deferredCompletedTaskIds.delete(rootTaskId);
+  };
   const normalizeFocusAfterCompletion = (ref, checked) => {
     if (!checked || tasksViewState.focusTaskId !== ref.task.id) return;
     tasksViewState.focusTaskId = ref.parentTask ? ref.parentTask.id : null;
@@ -5762,6 +5776,7 @@ function renderTasksPaneV2() {
     cb.addEventListener('change', () => {
       if (taskHasChildren(task)) setTaskTreeCompleted(task, cb.checked);
       else setTaskCompleted(task, cb.checked);
+      rememberDeferredCompletion(ref, cb.checked);
       normalizeFocusAfterCompletion(ref, cb.checked);
       store.saveNow();
       rerenderEverywhere();
@@ -6179,6 +6194,7 @@ function renderTasksPaneV2() {
         selectedRefs.forEach((ref) => {
           if (taskHasChildren(ref.task)) setTaskTreeCompleted(ref.task, true);
           else setTaskCompleted(ref.task, true);
+          rememberDeferredCompletion(ref, true);
         });
         selectedTaskKeys = new Set();
         store.saveNow();
@@ -6308,12 +6324,13 @@ function renderTasksPaneV2() {
   };
 
   const topLevelRefs = sortRefs(allTaskRefs.filter((ref) => ref.depth === 0 && visibleById.get(ref.task.id)));
-  const openRoots = topLevelRefs.filter((ref) => !ref.task.completed);
-  const doneRoots = topLevelRefs.filter((ref) => ref.task.completed);
+  const isDeferredDoneRoot = (ref) => !!ref?.task?.completed && deferredCompletedTaskIds.has(ref.task.id);
+  const openRoots = topLevelRefs.filter((ref) => !ref.task.completed || isDeferredDoneRoot(ref));
+  const doneRoots = topLevelRefs.filter((ref) => ref.task.completed && !isDeferredDoneRoot(ref));
   const starredRefs = sortRefs(visibleRefs.filter((ref) => !ref.task.completed && ref.task.starred));
 
   if (starredRefs.length) appendSection('Starred', starredRefs, { extraClass: 'task-section-starred', cardOpts: { flat: true } });
-  if (openRoots.length) appendSection(tasksViewState.showBlocked ? 'Open Tasks' : 'Ready Tasks', openRoots);
+  if (openRoots.length) appendSection((tasksViewState.showBlocked || openRoots.some((ref) => isDeferredDoneRoot(ref))) ? 'Open Tasks' : 'Ready Tasks', openRoots);
   if (doneRoots.length) appendSection('Completed', doneRoots);
 
   if (!openRoots.length && !doneRoots.length && !movingEntries.length && !followUpEntries.length) {
