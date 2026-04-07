@@ -11,6 +11,7 @@ const UI_PREFS_KEY = 'daymx-ui-prefs-v1';
 const GAMIFICATION_KEY = 'daymx-gamification-v1';
 const HISTORY_LIMIT = 80;
 const QUICK_CAPTURE_NEW_TAG = '__new__';
+const REVIEW_BREAKDOWN_STAGE_ID = '__review_breakdown__';
 
 function uid(prefix = 'id') {
   return `${prefix}_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 7)}`;
@@ -434,6 +435,11 @@ const openPredictionPanels = {
   review: new Set(),
   tasks: new Set(),
 };
+const openBreakdownPanels = {
+  prepare: new Set(),
+  review: new Set(),
+  tasks: new Set(),
+};
 
 function isTagPanelOpen(view, taskId) {
   const set = openTagPanels[view];
@@ -469,6 +475,19 @@ function isPredictionPanelOpen(view, taskId) {
 
 function setPredictionPanelOpen(view, taskId, open) {
   const set = openPredictionPanels[view];
+  if (!set || !taskId) return;
+  if (open) set.add(taskId);
+  else set.delete(taskId);
+}
+
+function isBreakdownPanelOpen(view, taskId) {
+  const set = openBreakdownPanels[view];
+  if (!set || !taskId) return false;
+  return set.has(taskId);
+}
+
+function setBreakdownPanelOpen(view, taskId, open) {
+  const set = openBreakdownPanels[view];
   if (!set || !taskId) return;
   if (open) set.add(taskId);
   else set.delete(taskId);
@@ -1129,6 +1148,19 @@ function formatPredictionDeadline(value) {
   });
 }
 
+function predictionDeadlinePreset(kind = 'default', now = new Date()) {
+  const date = new Date(now);
+  if (isNaN(date)) return null;
+  if (kind === 'tomorrow') date.setDate(date.getDate() + 1);
+  else if (kind === 'week') date.setDate(date.getDate() + 7);
+  date.setHours(23, 59, 0, 0);
+  if ((kind === 'default' || kind === 'tonight') && date.getTime() <= now.getTime()) {
+    date.setDate(date.getDate() + 1);
+    date.setHours(23, 59, 0, 0);
+  }
+  return date.toISOString();
+}
+
 function predictionRelativeLabel(value, now = new Date()) {
   const date = parseIsoDate(value);
   if (!date) return '';
@@ -1246,6 +1278,9 @@ function createTask(text = '') {
     duration: null,
     blocked: false,
     starred: false,
+    needsBreakdown: false,
+    breakdownNote: '',
+    breakdownFlaggedAt: null,
     prediction: null,
     predictionHistory: [],
     pins: [],
@@ -1319,6 +1354,9 @@ function normalizeTaskNode(task, opts = {}) {
   if (!('duration' in task)) task.duration = null;
   if (!('blocked' in task)) task.blocked = false;
   if (!('starred' in task)) task.starred = false;
+  if (!('needsBreakdown' in task)) task.needsBreakdown = false;
+  if (!('breakdownNote' in task)) task.breakdownNote = '';
+  if (!('breakdownFlaggedAt' in task)) task.breakdownFlaggedAt = null;
   if (!('prediction' in task)) task.prediction = null;
   if (!('predictionHistory' in task) || !Array.isArray(task.predictionHistory)) task.predictionHistory = [];
   if (!('pins' in task) || !Array.isArray(task.pins)) task.pins = [];
@@ -1332,6 +1370,9 @@ function normalizeTaskNode(task, opts = {}) {
   if (legacyLoc && (!task.locations || !task.locations.length)) task.locations = [legacyLoc];
   task.locations = uniqTags(task.locations);
   if (!task.loc && task.locations.length) task.loc = task.locations[0];
+  task.needsBreakdown = !!task.needsBreakdown;
+  task.breakdownNote = String(task.breakdownNote || '').trim();
+  task.breakdownFlaggedAt = task.breakdownFlaggedAt || null;
   task.pins = normalizeTaskPins(task.pins);
   task.prediction = task.prediction ? normalizeTaskPredictionRecord(task.prediction, { active: true }) : null;
   task.predictionHistory = normalizeTaskPredictionHistory(task.predictionHistory);
@@ -1532,6 +1573,44 @@ function taskHasChildren(task) {
 
 function taskChildMode(task) {
   return task?.childMode === 'sequential' ? 'sequential' : 'parallel';
+}
+
+function taskNeedsBreakdown(task) {
+  return !!task?.needsBreakdown;
+}
+
+function breakdownQueueTaskRefs() {
+  return flattenTaskRefs().filter((ref) => {
+    if (!ref?.task || !isNodePathEnabled(ref.node)) return false;
+    if (!taskNeedsBreakdown(ref.task)) return false;
+    if (ref.task.completed || ref.task.archivedAt) return false;
+    return true;
+  });
+}
+
+function reviewStageIds() {
+  const ids = subthreadsForReview().map((node) => node.id);
+  if (breakdownQueueTaskRefs().length) ids.push(REVIEW_BREAKDOWN_STAGE_ID);
+  return ids;
+}
+
+function isBreakdownReviewStageId(value) {
+  return value === REVIEW_BREAKDOWN_STAGE_ID;
+}
+
+function markTaskNeedsBreakdown(task, needsBreakdown, note = null, now = new Date()) {
+  if (!task || typeof task !== 'object') return false;
+  const next = !!needsBreakdown;
+  task.needsBreakdown = next;
+  if (note != null) task.breakdownNote = String(note || '').trim();
+  else task.breakdownNote = String(task.breakdownNote || '').trim();
+  if (next) {
+    if (!task.breakdownFlaggedAt) task.breakdownFlaggedAt = now.toISOString();
+    if (activeTaskPrediction(task)) supersedeTaskPrediction(task, now);
+  } else {
+    task.breakdownFlaggedAt = null;
+  }
+  return true;
 }
 
 function nextSeriesRank(task) {
@@ -1991,6 +2070,7 @@ function isTaskAvailable(taskOrRef, now = new Date(), currentContext = null, dep
   const ref = taskOrRef?.task ? taskOrRef : (taskOrRef?.id ? findTaskRefById(taskOrRef.id) : null);
   const t = ref?.task || taskOrRef;
   if (!t || t.completed) return false;
+  if (taskNeedsBreakdown(t)) return false;
   if (t.blocked) return false;
   if (t.waitingOn && t.waitingOn.trim()) return false;
   if (unresolvedDependencyIds(t, depMap).length) return false;
@@ -2008,6 +2088,10 @@ function isTaskAvailable(taskOrRef, now = new Date(), currentContext = null, dep
 function availabilityReason(taskOrRef, now = new Date(), currentContext = null, depMap = null) {
   const ref = taskOrRef?.task ? taskOrRef : (taskOrRef?.id ? findTaskRefById(taskOrRef.id) : null);
   const t = ref?.task || taskOrRef;
+  if (taskNeedsBreakdown(t)) {
+    const note = String(t.breakdownNote || '').trim();
+    return note ? `Needs breakdown: ${note}` : 'Needs breakdown';
+  }
   if (t.blocked) return 'Paused';
   const follow = followUpStatus(t, now);
   if (t.waitingOn && t.waitingOn.trim()) {
@@ -2160,6 +2244,7 @@ function taskStatusMeta(task, opts = {}) {
   const ref = opts.ref || null;
   const done = opts.done != null ? !!opts.done : !!task?.completed;
   if (done) return { label: 'Completed', tone: 'done' };
+  if (taskNeedsBreakdown(task)) return { label: 'Needs Breakdown', tone: 'breakdown' };
   if (task?.blocked) return { label: 'Paused', tone: 'blocked' };
   if (task?.waitingOn && String(task.waitingOn).trim()) return { label: 'Blocked', tone: 'blocked' };
   if (unresolvedDependencyIds(task, depMap).length) return { label: 'Blocked', tone: 'blocked' };
@@ -2184,10 +2269,22 @@ function buildTaskStateBadges(task, opts = {}) {
   const row = el('div', { class: 'task-state-row' });
   row.append(el('span', { class: 'pill task-state-chip priority' }, `P${pri}`));
   row.append(el('span', { class: `pill task-state-chip ${status.tone}` }, status.label));
+  if (taskNeedsBreakdown(task)) {
+    row.append(el('span', { class: 'pill task-state-chip breakdown' }, 'Review Queue'));
+  }
   if (waiting) {
     row.append(el('span', { class: 'pill task-state-chip waiting' }, `Waiting on: ${waiting}`));
   }
   return row;
+}
+
+function buildTaskBreakdownBanner(task) {
+  if (!taskNeedsBreakdown(task)) return null;
+  const banner = el('div', { class: 'task-breakdown-banner' });
+  banner.append(el('div', { class: 'task-breakdown-title' }, 'Needs breakdown'));
+  const note = String(task.breakdownNote || '').trim();
+  banner.append(el('div', { class: 'task-breakdown-copy' }, note || 'Break this task into smaller actionable pieces before moving it back into Tasks.'));
+  return banner;
 }
 
 function buildTaskPredictionBanner(task, opts = {}) {
@@ -2223,12 +2320,7 @@ function buildPredictionControls(taskId, rerender) {
   const updateTask = (updater) => mutateTaskAndRefresh(taskId, updater, rerender, { renderThreads: true });
   const active = activeTaskPrediction(task);
   const now = new Date();
-  const defaultDeadline = (() => {
-    const next = new Date(now);
-    next.setDate(next.getDate() + 1);
-    next.setHours(18, 0, 0, 0);
-    return next.toISOString();
-  })();
+  const defaultDeadline = predictionDeadlinePreset('default', now);
 
   const summaryRow = buildRow('Current');
   summaryRow.append(
@@ -2275,24 +2367,16 @@ function buildPredictionControls(taskId, rerender) {
   const setDeadline = (date) => {
     deadlineInput.value = toLocalInputValue(date.toISOString());
   };
-  const tomorrow = new Date(now);
-  tomorrow.setDate(tomorrow.getDate() + 1);
-  tomorrow.setHours(18, 0, 0, 0);
-  const week = new Date(now);
-  week.setDate(week.getDate() + 7);
-  week.setHours(18, 0, 0, 0);
   [
-    ['Tonight', (() => {
-      const d = new Date(now);
-      d.setHours(23, 0, 0, 0);
-      if (d <= now) d.setDate(d.getDate() + 1);
-      return d;
-    })()],
-    ['Tomorrow', tomorrow],
-    ['1 week', week],
+    ['Tonight', parseIsoDate(predictionDeadlinePreset('tonight', now))],
+    ['Tomorrow', parseIsoDate(predictionDeadlinePreset('tomorrow', now))],
+    ['1 week', parseIsoDate(predictionDeadlinePreset('week', now))],
   ].forEach(([label, date]) => {
     const btn = el('button', { class: 'chip toggle', type: 'button' }, label);
-    btn.addEventListener('click', () => setDeadline(date));
+    btn.addEventListener('click', () => {
+      if (!date) return;
+      setDeadline(date);
+    });
     quickDeadlineRow.append(btn);
   });
   deadlineControls.append(deadlineInput, quickDeadlineRow);
@@ -2335,6 +2419,85 @@ function buildPredictionControls(taskId, rerender) {
     });
     actions.append(clearBtn);
   }
+  actionsRow.append(actions, el('div'));
+  panel.append(actionsRow);
+
+  return panel;
+}
+
+function buildBreakdownControls(taskId, rerender, opts = {}) {
+  const ref = findTaskRefById(taskId);
+  const task = ref?.task;
+  const panel = el('div', { class: 'availability task-breakdown-panel' });
+  if (!ref || !task) return panel;
+
+  const updateTask = (updater) => mutateTaskAndRefresh(taskId, updater, rerender, { renderThreads: true });
+  const buildRow = (label) => {
+    const row = el('div', { class: 'row' });
+    row.append(el('div', { class: 'subtext' }, label));
+    return row;
+  };
+  const noteValue = String(task.breakdownNote || '').trim();
+
+  const summaryRow = buildRow('Queue');
+  summaryRow.append(
+    el('div', { class: 'task-breakdown-summary' }, taskNeedsBreakdown(task) ? 'Currently in the Review breakdown queue.' : 'Not in the breakdown queue yet.'),
+    el('div')
+  );
+  panel.append(summaryRow);
+
+  const noteRow = buildRow('Why');
+  const noteInput = el('textarea', {
+    class: 'task-title-input task-breakdown-note-input',
+    rows: '1',
+    placeholder: 'Too vague, too big, multiple steps...'
+  });
+  initTaskTextInput(noteInput);
+  noteInput.value = noteValue;
+  noteRow.append(noteInput, el('div'));
+  panel.append(noteRow);
+
+  const actionsRow = buildRow('Actions');
+  const actions = el('div', { class: 'task-breakdown-actions' });
+  const stateBtn = el('button', { class: 'btn ghost', type: 'button' }, taskNeedsBreakdown(task) ? 'Mark ready' : 'Send to queue');
+  stateBtn.addEventListener('click', () => {
+    const next = !taskNeedsBreakdown(task);
+    setBreakdownPanelOpen('tasks', taskId, false);
+    setBreakdownPanelOpen('review', taskId, false);
+    updateTask((liveTask) => {
+      markTaskNeedsBreakdown(liveTask, next, noteInput.value);
+    });
+    if (next && opts.view === 'tasks') {
+      showToast('Moved to Breakdown Queue in Review');
+    } else if (!next) {
+      showToast('Task marked ready');
+    }
+  });
+  actions.append(stateBtn);
+
+  const saveNoteBtn = el('button', { class: 'btn ghost btn-lite', type: 'button' }, 'Save note');
+  saveNoteBtn.addEventListener('click', () => {
+    updateTask((liveTask) => {
+      liveTask.breakdownNote = String(noteInput.value || '').trim();
+    });
+    showToast('Breakdown note saved');
+  });
+  actions.append(saveNoteBtn);
+
+  const addChildBtn = el('button', { class: 'btn ghost btn-lite', type: 'button' }, '+ Add subtask');
+  addChildBtn.addEventListener('click', () => {
+    if (typeof opts.onAddChild === 'function') opts.onAddChild();
+  });
+  actions.append(addChildBtn);
+
+  if (ref.parentTask) {
+    const addSiblingBtn = el('button', { class: 'btn ghost btn-lite', type: 'button' }, '+ Add sibling');
+    addSiblingBtn.addEventListener('click', () => {
+      if (typeof opts.onAddSibling === 'function') opts.onAddSibling();
+    });
+    actions.append(addSiblingBtn);
+  }
+
   actionsRow.append(actions, el('div'));
   panel.append(actionsRow);
 
@@ -2597,6 +2760,7 @@ function mutateTaskAndRefresh(taskId, updater, rerender, opts = {}) {
   if (opts.renderThreads) renderThreads();
   const reviewVisible = !!$('#review-stage') && !$('#review-stage').hidden;
   if (reviewVisible) {
+    syncReviewStateToCurrentNodes();
     renderProgress();
   }
   if (reviewVisible && typeof rerender !== 'function') renderStoryCard();
@@ -3529,8 +3693,7 @@ function renderReviewDate() {
 }
 
 function syncReviewStateToCurrentNodes() {
-  const nodes = subthreadsForReview();
-  const ids = nodes.map((n) => n.id);
+  const ids = reviewStageIds();
   if (!ids.length) {
     reviewState = { ids: [], idx: 0 };
     clearReviewProgress();
@@ -3592,8 +3755,7 @@ function restoreReviewProgressIfAny() {
   renderReviewDate();
   const saved = ensured.state;
   if (!saved || !saved.active) return false;
-  const nodes = subthreadsForReview();
-  const ids = nodes.map(n => n.id);
+  const ids = reviewStageIds();
   if (!ids.length) return false;
   let idx = Math.min(Math.max(0, Number(saved.idx) || 0), ids.length - 1);
   if (saved.currentId) {
@@ -3621,9 +3783,9 @@ function startReview() {
   renderReviewDate();
   const summary = $('#review-summary');
   if (summary) summary.hidden = true;
-  const nodes = subthreadsForReview();
-  reviewState = { ids: nodes.map(n => n.id), idx: 0 };
-  if (!nodes.length) {
+  const ids = reviewStageIds();
+  reviewState = { ids, idx: 0 };
+  if (!ids.length) {
     $('#review-empty').hidden = false;
     $('#review-stage').hidden = true;
     $('#btn-start-review').hidden = false;
@@ -3646,21 +3808,27 @@ function renderProgress() {
   const total = reviewState.ids.length;
   if (!total) return;
   for (let i = 0; i < total; i++) {
-    const node = findNodeById(store.data.threads, reviewState.ids[i]);
+    const currentId = reviewState.ids[i];
+    const isBreakdownStage = isBreakdownReviewStageId(currentId);
+    const node = isBreakdownStage ? null : findNodeById(store.data.threads, currentId);
     const root = rootOf(node);
     // divider between different root threads
     if (i > 0) {
-      const prevNode = findNodeById(store.data.threads, reviewState.ids[i - 1]);
+      const prevId = reviewState.ids[i - 1];
+      const prevNode = isBreakdownReviewStageId(prevId) ? null : findNodeById(store.data.threads, prevId);
       const prevRoot = rootOf(prevNode);
-      if (prevRoot?.id !== root?.id) bar.append(el('div', { class: 'divider' }));
+      if (isBreakdownStage || isBreakdownReviewStageId(prevId) || prevRoot?.id !== root?.id) {
+        bar.append(el('div', { class: 'divider' }));
+      }
     }
     const seg = el('button', {
       class: 'segment',
       type: 'button',
       'data-idx': String(i),
-      title: `Jump to item ${i + 1}`,
+      title: isBreakdownStage ? 'Jump to breakdown queue' : `Jump to item ${i + 1}`,
     });
-    seg.style.setProperty('--seg-color', root?.color || 'white');
+    if (isBreakdownStage) seg.classList.add('segment-breakdown');
+    seg.style.setProperty('--seg-color', isBreakdownStage ? 'var(--warn)' : (root?.color || 'white'));
     const fill = el('div', { class: 'fill' });
     if (i < reviewState.idx) seg.classList.add('done');
     if (i === reviewState.idx) seg.classList.add('current');
@@ -3679,14 +3847,86 @@ function renderProgress() {
   if (current) current.style.setProperty('--w', '100%');
 }
 
+function renderReviewBreakdownQueue(card, now = new Date()) {
+  const refs = breakdownQueueTaskRefs();
+  card.style.setProperty('--thread-color', 'var(--warn)');
+  if (!refs.length) {
+    card.append(
+      el('div', { class: 'story-header' }, [
+        el('div', { class: 'thread-line' }, el('div', { class: 'thread-pill' }, 'Review')),
+        el('div', { class: 'story-title' }, 'Breakdown Queue'),
+        el('div', { class: 'subtext' }, 'Nothing is waiting for breakdown right now.')
+      ])
+    );
+    return;
+  }
+
+  const enabledNodes = subthreadsForReview();
+  const depMap = allTaskRefMap();
+  const grouped = enabledNodes
+    .map((node) => ({ node, refs: refs.filter((ref) => ref.node.id === node.id) }))
+    .filter((entry) => entry.refs.length);
+
+  const header = el('div', { class: 'story-header' });
+  const threadLine = el('div', { class: 'thread-line' });
+  threadLine.append(el('div', { class: 'thread-pill' }, 'Review'));
+  const threadCount = new Set(grouped.map((entry) => rootOf(entry.node)?.id || entry.node.id)).size;
+  header.append(
+    threadLine,
+    el('div', { class: 'story-title' }, 'Breakdown Queue'),
+    el('div', { class: 'subtext' }, `${refs.length} task${refs.length === 1 ? '' : 's'} across ${threadCount} thread${threadCount === 1 ? '' : 's'} still need to be broken down before they return to Tasks.`)
+  );
+  card.append(header);
+
+  grouped.forEach(({ node, refs: nodeRefs }) => {
+    const section = el('div', { class: 'story-section breakdown-queue-section' });
+    section.append(
+      el('div', { class: 'section-kicker' }, nodePath(node)),
+      el('div', { class: 'subtext breakdown-queue-meta' }, `${nodeRefs.length} item${nodeRefs.length === 1 ? '' : 's'} waiting`)
+    );
+    const cards = buildReviewTaskCards(node, depMap, now, { onlyBreakdown: true });
+    if (cards.hasItems) section.append(cards.content);
+    card.append(section);
+  });
+}
+
+function openBreakdownQueueInReview(taskId = null) {
+  const ids = reviewStageIds();
+  const idx = ids.indexOf(REVIEW_BREAKDOWN_STAGE_ID);
+  if (idx < 0) return false;
+  switchView('review');
+  const summary = $('#review-summary');
+  if (summary) summary.hidden = true;
+  $('#review-empty').hidden = true;
+  $('#review-stage').hidden = false;
+  $('#btn-start-review').hidden = true;
+  reviewState = { ids, idx };
+  renderProgress();
+  renderStoryCard();
+  saveReviewProgress();
+  if (taskId) {
+    requestAnimationFrame(() => {
+      revealTaskCard(taskId, { block: 'nearest', root: $('#story-card') || document });
+    });
+  }
+  return true;
+}
+
 function renderStoryCard() {
   const token = startViewportPreservation(!!$('#view-review') && !$('#view-review').hidden, $('#view-review'));
   try {
     clearReviewQuestionCountdowns();
     if (settleTaskPredictions(new Date())) store.saveNow();
-    const n = findNodeById(store.data.threads, reviewState.ids[reviewState.idx]);
     const card = $('#story-card');
     card.innerHTML = '';
+    const currentId = reviewState.ids[reviewState.idx];
+
+    if (isBreakdownReviewStageId(currentId)) {
+      renderReviewBreakdownQueue(card, new Date());
+      return;
+    }
+
+    const n = findNodeById(store.data.threads, currentId);
 
     if (!n) {
       card.append(el('div', { class: 'empty' }, 'Review complete.'));
@@ -3878,6 +4118,7 @@ function buildCarryForwardRecommendations(limit = 6) {
   const now = new Date();
   const depMap = allTaskRefMap();
   const refs = flattenTaskEntries().filter((ref) => {
+    if (taskNeedsBreakdown(ref.task)) return false;
     if (ref.kind === 'subtask') return !ref.subtask.completed && isTaskAvailable(ref.task, now, null, depMap);
     return !ref.task.completed && isTaskAvailable(ref.task, now, null, depMap);
   });
@@ -3948,21 +4189,29 @@ function mutateReviewTaskWithRefresh(taskId, updater, opts = {}) {
   updater(ref.task, ref);
   store.saveNow();
   if (opts.renderThreads) renderThreads();
+  syncReviewStateToCurrentNodes();
   renderProgress();
   if (!$('#view-tasks').hidden) renderTasksPane();
   rerenderReviewStoryKeepViewport(opts.anchorTaskId || taskId, opts.revealTaskId || null);
   return true;
 }
 
-function buildReviewTaskCards(node, depMap, now = new Date()) {
-  const refs = flattenTaskRefs().filter((ref) => ref.node.id === node.id);
-  const refById = new Map(refs.map((ref) => [ref.task.id, ref]));
+function buildReviewTaskCards(node, depMap, now = new Date(), opts = {}) {
+  const allRefs = flattenTaskRefs().filter((ref) => ref.node.id === node.id);
+  const renderRefs = allRefs.filter((ref) => {
+    if (opts.onlyBreakdown && !taskNeedsBreakdown(ref.task)) return false;
+    if (opts.excludeBreakdown && taskNeedsBreakdown(ref.task)) return false;
+    if (typeof opts.filter === 'function' && !opts.filter(ref)) return false;
+    return true;
+  });
+  const renderIdSet = new Set(renderRefs.map((ref) => ref.task.id));
+  const refById = new Map(allRefs.map((ref) => [ref.task.id, ref]));
   if (reviewTaskComposerState && !refById.has(reviewTaskComposerState.taskId)) {
     reviewTaskComposerState = null;
   }
 
   const metaById = new Map();
-  refs.forEach((ref) => {
+  allRefs.forEach((ref) => {
     const task = ref.task;
     const done = !!task.completed;
     metaById.set(task.id, {
@@ -4049,6 +4298,7 @@ function buildReviewTaskCards(node, depMap, now = new Date()) {
     });
     item.style.setProperty('--task-depth', String(depth));
     if (task.starred) item.classList.add('is-starred');
+    if (taskNeedsBreakdown(task)) item.classList.add('needs-breakdown');
     if (meta?.due?.state === 'overdue') item.classList.add('due-overdue');
     else if (meta?.due?.state === 'soon') item.classList.add('due-soon');
 
@@ -4091,7 +4341,7 @@ function buildReviewTaskCards(node, depMap, now = new Date()) {
     });
     titleWrap.append(titleInput);
     const infoParts = [];
-    if (!meta?.done && meta?.reason) infoParts.push(meta.reason);
+    if (!meta?.done && meta?.reason && !taskNeedsBreakdown(task)) infoParts.push(meta.reason);
     if (!meta?.done && (meta?.due?.state === 'overdue' || meta?.due?.state === 'soon')) infoParts.push(meta.due.label);
     const summary = childSummary(task);
     if (summary) infoParts.push(summary);
@@ -4113,13 +4363,35 @@ function buildReviewTaskCards(node, depMap, now = new Date()) {
     const predictionBtn = el('button', {
       class: `task-icon-btn${activeTaskPrediction(task) ? ' active prediction' : ''}`,
       type: 'button',
-      title: activeTaskPrediction(task) ? 'Edit prediction' : 'Set prediction',
-      'aria-label': activeTaskPrediction(task) ? 'Edit prediction' : 'Set prediction',
+      title: taskNeedsBreakdown(task)
+        ? 'Prediction unavailable while task needs breakdown'
+        : (activeTaskPrediction(task) ? 'Edit prediction' : 'Set prediction'),
+      'aria-label': taskNeedsBreakdown(task)
+        ? 'Prediction unavailable while task needs breakdown'
+        : (activeTaskPrediction(task) ? 'Edit prediction' : 'Set prediction'),
     }, '◔');
+    predictionBtn.disabled = taskNeedsBreakdown(task);
     predictionBtn.addEventListener('click', () => {
       const next = !isPredictionPanelOpen('review', task.id);
       setPredictionPanelOpen('review', task.id, next);
       if (next) {
+        setPausePanelOpen('review', task.id, false);
+        setTagPanelOpen('review', task.id, false);
+        setBreakdownPanelOpen('review', task.id, false);
+      }
+      rerenderReviewStoryKeepViewport(task.id);
+    });
+    const breakdownBtn = el('button', {
+      class: `task-icon-btn${taskNeedsBreakdown(task) ? ' active breakdown' : ''}`,
+      type: 'button',
+      title: taskNeedsBreakdown(task) ? 'Edit breakdown queue status' : 'Mark as needing breakdown',
+      'aria-label': taskNeedsBreakdown(task) ? 'Edit breakdown queue status' : 'Mark as needing breakdown',
+    }, '⇣');
+    breakdownBtn.addEventListener('click', () => {
+      const next = !isBreakdownPanelOpen('review', task.id);
+      setBreakdownPanelOpen('review', task.id, next);
+      if (next) {
+        setPredictionPanelOpen('review', task.id, false);
         setPausePanelOpen('review', task.id, false);
         setTagPanelOpen('review', task.id, false);
       }
@@ -4136,6 +4408,7 @@ function buildReviewTaskCards(node, depMap, now = new Date()) {
       setPausePanelOpen('review', task.id, next);
       if (next) setTagPanelOpen('review', task.id, false);
       if (next) setPredictionPanelOpen('review', task.id, false);
+      if (next) setBreakdownPanelOpen('review', task.id, false);
       rerenderReviewStoryKeepViewport(task.id);
     });
     const detailBtn = el('button', {
@@ -4150,15 +4423,18 @@ function buildReviewTaskCards(node, depMap, now = new Date()) {
       if (next) {
         setPausePanelOpen('review', task.id, false);
         setPredictionPanelOpen('review', task.id, false);
+        setBreakdownPanelOpen('review', task.id, false);
       }
       rerenderReviewStoryKeepViewport(task.id);
     });
-    tools.append(starBtn, predictionBtn, pauseBtn, detailBtn);
+    tools.append(starBtn, predictionBtn, breakdownBtn, pauseBtn, detailBtn);
     head.append(tools);
     item.append(head);
 
     const predictionBanner = buildTaskPredictionBanner(task, { now });
     if (predictionBanner) item.append(predictionBanner);
+    const breakdownBanner = buildTaskBreakdownBanner(task);
+    if (breakdownBanner) item.append(breakdownBanner);
 
     const badgeRow = buildTaskStateBadges(task, { now, depMap, done: meta?.done, ref });
     if (taskHasChildren(task)) {
@@ -4201,6 +4477,19 @@ function buildReviewTaskCards(node, depMap, now = new Date()) {
     if (isPredictionPanelOpen('review', task.id)) {
       item.append(buildPredictionControls(task.id, () => rerenderReviewStoryKeepViewport(task.id)));
     }
+    if (isBreakdownPanelOpen('review', task.id)) {
+      item.append(buildBreakdownControls(task.id, () => rerenderReviewStoryKeepViewport(task.id), {
+        view: 'review',
+        onAddChild: () => {
+          setBreakdownPanelOpen('review', task.id, false);
+          openComposer('child', task.id);
+        },
+        onAddSibling: ref.parentTask ? () => {
+          setBreakdownPanelOpen('review', task.id, false);
+          openComposer('sibling', task.id);
+        } : null,
+      }));
+    }
     if (isTagPanelOpen('review', task.id)) {
       item.append(buildAvailabilityControls(ref.node.id, task.id, () => rerenderReviewStoryKeepViewport(task.id)));
     }
@@ -4209,7 +4498,7 @@ function buildReviewTaskCards(node, depMap, now = new Date()) {
 
     const children = taskChildList(task)
       .map((child) => refById.get(child.id))
-      .filter(Boolean);
+      .filter((childRef) => childRef && renderIdSet.has(childRef.task.id));
     const composerRef = reviewTaskComposerState ? refById.get(reviewTaskComposerState.taskId) : null;
     const forceOpen = !!composerRef && composerRef.ancestors.some((ancestor) => ancestor.id === task.id);
     const expanded = taskHasChildren(task) && (!collapsedTaskTrees.has(task.id) || forceOpen);
@@ -4226,10 +4515,10 @@ function buildReviewTaskCards(node, depMap, now = new Date()) {
   };
 
   const fragment = document.createDocumentFragment();
-  refs
-    .filter((ref) => ref.depth === 0)
+  renderRefs
+    .filter((ref) => !ref.ancestors.some((ancestor) => renderIdSet.has(ancestor.id)))
     .forEach((ref) => fragment.append(makeTaskCard(ref)));
-  return { hasItems: refs.some((ref) => ref.depth === 0), content: fragment };
+  return { hasItems: renderRefs.length > 0, content: fragment };
 }
 
 function nextStory() {
@@ -4546,8 +4835,7 @@ function onReviewVisibility() {
   renderReviewDate();
   const shared = ensured.state;
   if (shared?.active) {
-    const nodes = subthreadsForReview();
-    const ids = nodes.map((n) => n.id);
+    const ids = reviewStageIds();
     if (!ids.length) {
       reviewState = { ids: [], idx: 0 };
       clearReviewProgress();
@@ -4569,11 +4857,14 @@ function onReviewVisibility() {
     saveReviewProgress();
     return;
   }
-  const has = subthreadsForReview().length > 0;
+  const has = reviewStageIds().length > 0;
+  const breakdownCount = breakdownQueueTaskRefs().length;
   // Show empty only when there are no subthreads; stage remains hidden until start
   const empty = $('#review-empty');
   if (has) {
-    empty.textContent = 'Press Start Review to begin.';
+    empty.textContent = breakdownCount
+      ? `Press Start Review to begin. ${breakdownCount} task${breakdownCount === 1 ? '' : 's'} need breakdown at the end.`
+      : 'Press Start Review to begin.';
     empty.hidden = false;
   } else {
     empty.textContent = 'No subthreads yet. Add some in Prepare.';
@@ -5226,6 +5517,11 @@ function renderSearchResults(query) {
           row?.scrollIntoView({ behavior: 'smooth', block: 'center' });
         });
       } else {
+        const taskRef = findTaskRefById(r.id);
+        if (taskRef?.task && taskNeedsBreakdown(taskRef.task) && openBreakdownQueueInReview(r.id)) {
+          box.hidden = true;
+          return;
+        }
         switchView('tasks');
         tasksViewState.focusTaskId = r.id;
         tasksViewState.searchText = '';
@@ -5555,7 +5851,7 @@ function renderTasksPane() {
   const focusTaskId = tasksViewState.focusTaskId || null;
   const focusedTaskName = focusTaskId ? (depMap.get(focusTaskId)?.task?.text || 'Project') : '';
   const textNeedle = (tasksViewState.searchText || '').trim().toLowerCase();
-  const followUpEntries = allTaskRefs
+  const followUpEntries = actionableTaskRefs
     .map((ref) => {
       const task = ref.task;
       if (!nodeInScope(ref.node, threadNodeId)) return null;
@@ -6806,6 +7102,7 @@ function renderTasksPaneV2() {
   const priSet = new Set(normalizePriorityList(tasksViewState.priorityValues || []));
   const textNeedle = (tasksViewState.searchText || '').trim().toLowerCase();
   const allTaskRefs = flattenTaskRefs();
+  const actionableTaskRefs = allTaskRefs.filter((ref) => !taskNeedsBreakdown(ref.task));
   const predictionRoots = Array.isArray(store.data.threads) ? store.data.threads.slice() : [];
 
   if (tasksViewState.threadNodeId && !nodeById.has(tasksViewState.threadNodeId)) {
@@ -6816,20 +7113,23 @@ function renderTasksPaneV2() {
     tasksViewState.predictionThreadId = null;
     saveTasksViewState();
   }
-  if (tasksViewState.focusTaskId && !allTaskRefs.some((ref) => ref.task.id === tasksViewState.focusTaskId)) {
+  if (tasksViewState.focusTaskId && !actionableTaskRefs.some((ref) => ref.task.id === tasksViewState.focusTaskId)) {
     tasksViewState.focusTaskId = null;
     saveTasksViewState();
   }
 
   const threadNodeId = tasksViewState.threadNodeId || null;
   const predictionThreadId = tasksViewState.predictionThreadId || null;
-  const refById = new Map(allTaskRefs.map((ref) => [ref.task.id, ref]));
+  const refById = new Map(actionableTaskRefs.map((ref) => [ref.task.id, ref]));
   const rawFocusTaskId = tasksViewState.focusTaskId || null;
-  const focusTaskId = rawFocusTaskId ? (refById.get(rawFocusTaskId)?.parentTask?.id || rawFocusTaskId) : null;
+  const focusTaskId = rawFocusTaskId ? (() => {
+    const parentId = refById.get(rawFocusTaskId)?.parentTask?.id || null;
+    return parentId && refById.has(parentId) ? parentId : rawFocusTaskId;
+  })() : null;
   const focusedTaskName = focusTaskId ? (refById.get(focusTaskId)?.task?.text || 'Task') : '';
   const metaById = new Map();
 
-  allTaskRefs.forEach((ref) => {
+  actionableTaskRefs.forEach((ref) => {
     const task = ref.task;
     const done = !!task.completed;
     metaById.set(task.id, {
@@ -6867,20 +7167,21 @@ function renderTasksPaneV2() {
     const base = okThread && okCtx && okLoc && okTime && okPriority && okArchived && focusScope;
     return { base, okSearch, okAvailability };
   };
-  const matchStateById = new Map(allTaskRefs.map((ref) => [ref.task.id, matchStateForRef(ref)]));
-  const directMatchIds = new Set(allTaskRefs
+  const actionableIdSet = new Set(actionableTaskRefs.map((ref) => ref.task.id));
+  const matchStateById = new Map(actionableTaskRefs.map((ref) => [ref.task.id, matchStateForRef(ref)]));
+  const directMatchIds = new Set(actionableTaskRefs
     .filter((ref) => {
       const state = matchStateById.get(ref.task.id);
       return state?.base && state?.okSearch && state?.okAvailability;
     })
     .map((ref) => ref.task.id));
-  const treeMatchIds = new Set(allTaskRefs
+  const treeMatchIds = new Set(actionableTaskRefs
     .filter((ref) => {
       const state = matchStateById.get(ref.task.id);
       return state?.base && state?.okSearch;
     })
     .map((ref) => ref.task.id));
-  const expandedChildIds = new Set(allTaskRefs
+  const expandedChildIds = new Set(actionableTaskRefs
     .filter((ref) => matchStateById.get(ref.task.id)?.base)
     .map((ref) => ref.task.id));
   transientTaskVisibilityIds.forEach((taskId) => {
@@ -6889,17 +7190,18 @@ function renderTasksPaneV2() {
   const visibleById = new Map();
   const markVisible = (task) => {
     const childVisible = taskChildList(task).some((child) => markVisible(child));
-    const visible = directMatchIds.has(task.id) || transientTaskVisibilityIds.has(task.id) || childVisible;
+    const visible = actionableIdSet.has(task.id)
+      && (directMatchIds.has(task.id) || transientTaskVisibilityIds.has(task.id) || childVisible);
     visibleById.set(task.id, visible);
-    return visible;
+    return visible || childVisible;
   };
   flattenNodes(store.data.threads || []).forEach((node) => {
     if (!isNodePathEnabled(node)) return;
     (node.tasks || []).forEach((task) => markVisible(task));
   });
 
-  const visibleRefs = allTaskRefs.filter((ref) => visibleById.get(ref.task.id));
-  const starredVisibleRefs = allTaskRefs.filter((ref) => {
+  const visibleRefs = actionableTaskRefs.filter((ref) => visibleById.get(ref.task.id));
+  const starredVisibleRefs = actionableTaskRefs.filter((ref) => {
     const state = matchStateById.get(ref.task.id);
     return state?.base && state?.okSearch && !ref.task.completed && !!ref.task.starred;
   });
@@ -7080,7 +7382,8 @@ function renderTasksPaneV2() {
   const makeTaskCard = (ref, opts = {}) => {
     const task = ref.task;
     const meta = metaById.get(task.id);
-    const depth = Number(ref.depth) || 0;
+    const baseDepth = Math.max(0, Number(opts.baseDepth) || 0);
+    const depth = Math.max(0, (Number(ref.depth) || 0) - baseDepth);
     const item = el('div', {
       class: `task task-tree-card${meta?.done ? ' completed' : ''}${depth ? ' nested-task-card' : ''}${opts.flat ? ' flat-task-card' : ''}`,
       style: `border-left:6px solid ${ref.root?.color || 'var(--accent)'}`,
@@ -7177,13 +7480,35 @@ function renderTasksPaneV2() {
     const predictionBtn = el('button', {
       class: `task-icon-btn${activeTaskPrediction(task) ? ' active prediction' : ''}`,
       type: 'button',
-      title: activeTaskPrediction(task) ? 'Edit prediction' : 'Set prediction',
-      'aria-label': activeTaskPrediction(task) ? 'Edit prediction' : 'Set prediction',
+      title: taskNeedsBreakdown(task)
+        ? 'Prediction unavailable while task needs breakdown'
+        : (activeTaskPrediction(task) ? 'Edit prediction' : 'Set prediction'),
+      'aria-label': taskNeedsBreakdown(task)
+        ? 'Prediction unavailable while task needs breakdown'
+        : (activeTaskPrediction(task) ? 'Edit prediction' : 'Set prediction'),
     }, '◔');
+    predictionBtn.disabled = taskNeedsBreakdown(task);
     predictionBtn.addEventListener('click', () => {
       const next = !isPredictionPanelOpen('tasks', task.id);
       setPredictionPanelOpen('tasks', task.id, next);
       if (next) {
+        setPausePanelOpen('tasks', task.id, false);
+        setTagPanelOpen('tasks', task.id, false);
+        setBreakdownPanelOpen('tasks', task.id, false);
+      }
+      rerenderTasksPaneKeepViewport();
+    });
+    const breakdownBtn = el('button', {
+      class: `task-icon-btn${taskNeedsBreakdown(task) ? ' active breakdown' : ''}`,
+      type: 'button',
+      title: taskNeedsBreakdown(task) ? 'Edit breakdown queue status' : 'Mark as needing breakdown',
+      'aria-label': taskNeedsBreakdown(task) ? 'Edit breakdown queue status' : 'Mark as needing breakdown',
+    }, '⇣');
+    breakdownBtn.addEventListener('click', () => {
+      const next = !isBreakdownPanelOpen('tasks', task.id);
+      setBreakdownPanelOpen('tasks', task.id, next);
+      if (next) {
+        setPredictionPanelOpen('tasks', task.id, false);
         setPausePanelOpen('tasks', task.id, false);
         setTagPanelOpen('tasks', task.id, false);
       }
@@ -7201,6 +7526,7 @@ function renderTasksPaneV2() {
       if (next) {
         setTagPanelOpen('tasks', task.id, false);
         setPredictionPanelOpen('tasks', task.id, false);
+        setBreakdownPanelOpen('tasks', task.id, false);
       }
       rerenderTasksPaneKeepViewport();
     });
@@ -7216,15 +7542,18 @@ function renderTasksPaneV2() {
       if (next) {
         setPausePanelOpen('tasks', task.id, false);
         setPredictionPanelOpen('tasks', task.id, false);
+        setBreakdownPanelOpen('tasks', task.id, false);
       }
       rerenderTasksPaneKeepViewport();
     });
-    tools.append(starBtn, predictionBtn, pauseBtn, detailBtn);
+    tools.append(starBtn, predictionBtn, breakdownBtn, pauseBtn, detailBtn);
     head.append(tools);
     item.append(head);
 
     const predictionBanner = buildTaskPredictionBanner(task, { now });
     if (predictionBanner) item.append(predictionBanner);
+    const breakdownBanner = buildTaskBreakdownBanner(task);
+    if (breakdownBanner) item.append(breakdownBanner);
 
     const badgeRow = buildTaskStateBadges(task, { now, depMap, done: meta?.done, ref });
     if (taskHasChildren(task)) {
@@ -7279,6 +7608,17 @@ function renderTasksPaneV2() {
 
     if (isPausePanelOpen('tasks', task.id)) item.append(buildPauseControls(task.id, () => rerenderTasksPaneKeepViewport()));
     if (isPredictionPanelOpen('tasks', task.id)) item.append(buildPredictionControls(task.id, () => rerenderTasksPaneKeepViewport()));
+    if (isBreakdownPanelOpen('tasks', task.id)) item.append(buildBreakdownControls(task.id, () => rerenderTasksPaneKeepViewport(), {
+      view: 'tasks',
+      onAddChild: () => {
+        setBreakdownPanelOpen('tasks', task.id, false);
+        openComposer('child', task.id);
+      },
+      onAddSibling: ref.parentTask ? () => {
+        setBreakdownPanelOpen('tasks', task.id, false);
+        openComposer('sibling', task.id);
+      } : null,
+    }));
     if (isTagPanelOpen('tasks', task.id)) item.append(buildAvailabilityControls(ref.node.id, task.id, () => rerenderTasksPaneKeepViewport()));
 
     if (!opts.flat) {
@@ -7288,7 +7628,7 @@ function renderTasksPaneV2() {
       const expanded = taskHasChildren(task) && (!collapsedTaskTrees.has(task.id) || forceOpen || !!tasksViewState.searchText);
       if (children.length && expanded) {
         const kids = el('div', { class: 'task-tree-children' });
-        children.forEach((childRef) => kids.append(makeTaskCard(childRef)));
+        children.forEach((childRef) => kids.append(makeTaskCard(childRef, { baseDepth })));
         item.append(kids);
       }
     }
@@ -7360,6 +7700,13 @@ function renderTasksPaneV2() {
 
     const openPredictionTask = (entry) => {
       if (!entry?.taskId) return;
+      const targetRef = findTaskRefById(entry.taskId);
+      if (targetRef?.task && taskNeedsBreakdown(targetRef.task)) {
+        if (openBreakdownQueueInReview(entry.taskId)) {
+          showToast('Task is in the Breakdown Queue');
+        }
+        return;
+      }
       tasksViewState.focusTaskId = entry.taskId;
       tasksViewState.showBlocked = true;
       tasksViewState.showArchived = true;
@@ -7775,11 +8122,12 @@ function renderTasksPaneV2() {
     head.append(el('h3', {}, title));
     head.append(el('span', { class: 'pill tag' }, `${refs.length}`));
     section.append(head);
-    refs.forEach((ref) => section.append(makeTaskCard(ref, opts.cardOpts || {})));
+    refs.forEach((ref) => section.append(makeTaskCard(ref, { ...(opts.cardOpts || {}), baseDepth: Number(ref.depth) || 0 })));
     root.append(section);
   };
 
-  const topLevelRefs = sortRefs(allTaskRefs.filter((ref) => ref.depth === 0 && visibleById.get(ref.task.id)));
+  const visibleIdSet = new Set(visibleRefs.map((ref) => ref.task.id));
+  const topLevelRefs = sortRefs(visibleRefs.filter((ref) => !ref.ancestors.some((ancestor) => visibleIdSet.has(ancestor.id))));
   const isDeferredDoneRoot = (ref) => !!ref?.task?.completed && deferredCompletedTaskIds.has(ref.task.id);
   const openRoots = topLevelRefs.filter((ref) => !ref.task.completed || isDeferredDoneRoot(ref));
   const doneRoots = topLevelRefs.filter((ref) => ref.task.completed && !isDeferredDoneRoot(ref));
@@ -7822,7 +8170,9 @@ if (typeof module !== 'undefined' && module.exports) {
       predictionBucketLabel,
       predictionCalibrationRows,
       predictionBrierScore,
+      predictionDeadlinePreset,
       maybeResolveTaskPrediction,
+      markTaskNeedsBreakdown,
       pointsForTaskCompletion,
       setTaskCompleted,
       setSubtaskCompleted,
