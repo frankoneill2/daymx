@@ -2590,20 +2590,25 @@ function refreshPreparePrimaryAction() {
 }
 
 function renderThreads() {
-  const root = $('#threads-root');
-  root.innerHTML = '';
-  const depMap = allTaskRefMap();
-  refreshPreparePrimaryAction();
-  if (!store.data.threads.length) {
-    root.append(el('div', { class: 'empty' }, 'No threads yet. Add one to begin.'));
+  const token = startViewportPreservation(!!$('#view-prepare') && !$('#view-prepare').hidden);
+  try {
+    const root = $('#threads-root');
+    root.innerHTML = '';
+    const depMap = allTaskRefMap();
+    refreshPreparePrimaryAction();
+    if (!store.data.threads.length) {
+      root.append(el('div', { class: 'empty' }, 'No threads yet. Add one to begin.'));
+      refreshQuickCaptureTargets();
+      return;
+    }
+    for (const node of store.data.threads) {
+      root.append(renderNode(node, depMap));
+    }
     refreshQuickCaptureTargets();
-    return;
+    renderQuickCaptureJumpLink();
+  } finally {
+    finishViewportPreservation(token);
   }
-  for (const node of store.data.threads) {
-    root.append(renderNode(node, depMap));
-  }
-  refreshQuickCaptureTargets();
-  renderQuickCaptureJumpLink();
 }
 
 function renderNode(node, depMap = null) {
@@ -3138,23 +3143,25 @@ function renderProgress() {
 }
 
 function renderStoryCard() {
-  const n = findNodeById(store.data.threads, reviewState.ids[reviewState.idx]);
-  const card = $('#story-card');
-  card.innerHTML = '';
+  const token = startViewportPreservation(!!$('#view-review') && !$('#view-review').hidden);
+  try {
+    const n = findNodeById(store.data.threads, reviewState.ids[reviewState.idx]);
+    const card = $('#story-card');
+    card.innerHTML = '';
 
-  if (!n) {
-    card.append(el('div', { class: 'empty' }, 'Review complete.'));
-    return;
-  }
+    if (!n) {
+      card.append(el('div', { class: 'empty' }, 'Review complete.'));
+      return;
+    }
 
-  const root = rootOf(n);
-  const rootName = (root?.name || 'Thread').trim();
-  const nodeName = (n?.name || '').trim();
-  const sameScope = !!root && (
-    root.id === n.id ||
-    (rootName && nodeName && rootName.toLowerCase() === nodeName.toLowerCase())
-  );
-  card.style.setProperty('--thread-color', root?.color || 'var(--accent)');
+    const root = rootOf(n);
+    const rootName = (root?.name || 'Thread').trim();
+    const nodeName = (n?.name || '').trim();
+    const sameScope = !!root && (
+      root.id === n.id ||
+      (rootName && nodeName && rootName.toLowerCase() === nodeName.toLowerCase())
+    );
+    card.style.setProperty('--thread-color', root?.color || 'var(--accent)');
 
   // Header
   const header = el('div', { class: 'story-header' });
@@ -3252,7 +3259,10 @@ function renderStoryCard() {
   });
   addT.append(tInput, tBtn);
 
-  card.append(header, qSection, tSection, tasksEl, addT);
+    card.append(header, qSection, tSection, tasksEl, addT);
+  } finally {
+    finishViewportPreservation(token);
+  }
 }
 
 function buildCarryForwardRecommendations(limit = 6) {
@@ -4128,49 +4138,59 @@ function flattenTaskEntries() {
 // Pantry views
 // ------------------------------
 function renderPantryActiveView() {
-  const ptabPrep = $('#ptab-prepare');
-  const ptabRev = $('#ptab-review');
-  const ptabShop = $('#ptab-shopping');
-  if (![ptabPrep, ptabRev, ptabShop].some(b => b.classList.contains('active'))) {
-    if (uiPrefs.pantryTab === 'review') ptabRev.classList.add('active');
-    else if (uiPrefs.pantryTab === 'shopping') ptabShop.classList.add('active');
-    else ptabPrep.classList.add('active');
+  const token = startViewportPreservation(!!$('#view-pantry') && !$('#view-pantry').hidden);
+  try {
+    const ptabPrep = $('#ptab-prepare');
+    const ptabRev = $('#ptab-review');
+    const ptabShop = $('#ptab-shopping');
+    if (![ptabPrep, ptabRev, ptabShop].some(b => b.classList.contains('active'))) {
+      if (uiPrefs.pantryTab === 'review') ptabRev.classList.add('active');
+      else if (uiPrefs.pantryTab === 'shopping') ptabShop.classList.add('active');
+      else ptabPrep.classList.add('active');
+    }
+    // attach listeners once
+    if (!ptabPrep._wired) {
+      ptabPrep._wired = true;
+      ptabPrep.addEventListener('click', () => { ptabPrep.classList.add('active'); ptabRev.classList.remove('active'); ptabShop.classList.remove('active'); renderPantryActiveView(); });
+      ptabRev.addEventListener('click', () => { ptabRev.classList.add('active'); ptabPrep.classList.remove('active'); ptabShop.classList.remove('active'); renderPantryActiveView(); });
+      ptabShop.addEventListener('click', () => { ptabShop.classList.add('active'); ptabPrep.classList.remove('active'); ptabRev.classList.remove('active'); renderPantryActiveView(); });
+      // buttons in review
+      $('#btn-start-pantry-review').addEventListener('click', startPantryReview);
+      $('#pbtn-next').addEventListener('click', pantryNext);
+      $('#pbtn-prev').addEventListener('click', pantryPrev);
+    }
+    const vPrep = $('#pantry-prepare');
+    const vRev = $('#pantry-review');
+    const vShop = $('#pantry-shopping');
+    const active = [ptabPrep, ptabRev, ptabShop].find(b => b.classList.contains('active')) || ptabPrep;
+    if (active === ptabPrep) uiPrefs.pantryTab = 'prepare';
+    if (active === ptabRev) uiPrefs.pantryTab = 'review';
+    if (active === ptabShop) uiPrefs.pantryTab = 'shopping';
+    persistUiPrefs();
+    vPrep.hidden = active !== ptabPrep; vPrep.classList.toggle('active', active === ptabPrep);
+    vRev.hidden = active !== ptabRev; vRev.classList.toggle('active', active === ptabRev);
+    vShop.hidden = active !== ptabShop; vShop.classList.toggle('active', active === ptabShop);
+    if (active === ptabPrep) renderPantryPrepare();
+    if (active === ptabRev) pantryOnReviewVisibility();
+    if (active === ptabShop) { renderShoppingList(); wireCopyShopping(); }
+  } finally {
+    finishViewportPreservation(token);
   }
-  // attach listeners once
-  if (!ptabPrep._wired) {
-    ptabPrep._wired = true;
-    ptabPrep.addEventListener('click', () => { ptabPrep.classList.add('active'); ptabRev.classList.remove('active'); ptabShop.classList.remove('active'); renderPantryActiveView(); });
-    ptabRev.addEventListener('click', () => { ptabRev.classList.add('active'); ptabPrep.classList.remove('active'); ptabShop.classList.remove('active'); renderPantryActiveView(); });
-    ptabShop.addEventListener('click', () => { ptabShop.classList.add('active'); ptabPrep.classList.remove('active'); ptabRev.classList.remove('active'); renderPantryActiveView(); });
-    // buttons in review
-    $('#btn-start-pantry-review').addEventListener('click', startPantryReview);
-    $('#pbtn-next').addEventListener('click', pantryNext);
-    $('#pbtn-prev').addEventListener('click', pantryPrev);
-  }
-  const vPrep = $('#pantry-prepare');
-  const vRev = $('#pantry-review');
-  const vShop = $('#pantry-shopping');
-  const active = [ptabPrep, ptabRev, ptabShop].find(b => b.classList.contains('active')) || ptabPrep;
-  if (active === ptabPrep) uiPrefs.pantryTab = 'prepare';
-  if (active === ptabRev) uiPrefs.pantryTab = 'review';
-  if (active === ptabShop) uiPrefs.pantryTab = 'shopping';
-  persistUiPrefs();
-  vPrep.hidden = active !== ptabPrep; vPrep.classList.toggle('active', active === ptabPrep);
-  vRev.hidden = active !== ptabRev; vRev.classList.toggle('active', active === ptabRev);
-  vShop.hidden = active !== ptabShop; vShop.classList.toggle('active', active === ptabShop);
-  if (active === ptabPrep) renderPantryPrepare();
-  if (active === ptabRev) pantryOnReviewVisibility();
-  if (active === ptabShop) { renderShoppingList(); wireCopyShopping(); }
 }
 
 function renderPantryPrepare() {
-  const root = $('#pantry-prepare-root');
-  root.innerHTML = '';
-  const cats = store.data.pantry?.categories || [];
-  if (!cats.length) root.append(el('div', { class: 'empty' }, 'No categories yet. Add one to begin.'));
-  cats.forEach(c => root.append(renderPantryCategory(c)));
-  const addBtn = $('#btn-add-category');
-  if (addBtn) addBtn.onclick = () => { const name = confirmName('New category name', ''); if (!name) return; store.data.pantry.categories.push(createCategory(name)); store.saveNow(); renderPantryPrepare(); };
+  const token = startViewportPreservation(!!$('#view-pantry') && !$('#view-pantry').hidden && !!$('#pantry-prepare') && !$('#pantry-prepare').hidden);
+  try {
+    const root = $('#pantry-prepare-root');
+    root.innerHTML = '';
+    const cats = store.data.pantry?.categories || [];
+    if (!cats.length) root.append(el('div', { class: 'empty' }, 'No categories yet. Add one to begin.'));
+    cats.forEach(c => root.append(renderPantryCategory(c)));
+    const addBtn = $('#btn-add-category');
+    if (addBtn) addBtn.onclick = () => { const name = confirmName('New category name', ''); if (!name) return; store.data.pantry.categories.push(createCategory(name)); store.saveNow(); renderPantryPrepare(); };
+  } finally {
+    finishViewportPreservation(token);
+  }
 }
 
 function renderPantryCategory(cat) {
@@ -4253,7 +4273,14 @@ function pantryFlattenCats(){ const out=[]; const walk=(list, enabledPath=true)=
 function startPantryReview(){ const list=pantryFlattenCats(); pantryReviewState={ids:list.map(c=>c.id), idx:0}; if(!list.length){ $('#pantry-review-empty').hidden=false; $('#pantry-review-stage').hidden=true; return;} $('#pantry-review-empty').hidden=true; $('#pantry-review-stage').hidden=false; renderPantryProgress(); renderPantryCard(); savePantryReviewProgress(); }
 function findCategoryById(id){ const stack=[...(store.data.pantry?.categories||[])]; while(stack.length){ const c=stack.pop(); if(c.id===id) return c; (c.children||[]).forEach(x=>stack.push(x)); } return null; }
 function renderPantryProgress(){ const bar=$('#pprogress'); bar.innerHTML=''; const total=pantryReviewState.ids.length||1; for(let i=0;i<total;i++){ const seg=el('div',{class:'segment'}); const fill=el('div',{class:'fill'}); if(i<pantryReviewState.idx) seg.classList.add('done'); if(i===pantryReviewState.idx) seg.classList.add('current'); seg.append(fill); bar.append(seg);} const cur=bar.querySelector('.segment.current .fill'); if(cur) cur.style.setProperty('--w','100%'); }
-function renderPantryCard(){ const c=findCategoryById(pantryReviewState.ids[pantryReviewState.idx]); const card=$('#pcard'); card.innerHTML=''; if(!c){ card.append(el('div',{class:'empty'},'Review complete.')); return;} const header=el('div',{class:'story-header'}); header.append(el('div',{class:'story-title'},c.name)); card.append(header); (c.items||[]).forEach(item=>{ const row=el('div',{class:'task'}); row.classList.add(`pantry-${item.status}`); const status=el('select',{class:'priority-select'}); [['to_buy','To buy'],['stocked','Stocked'],['not_needed','Not needed']].forEach(([v,t])=>status.append(el('option',{value:v},t))); status.value=item.status; status.addEventListener('change',()=>{ item.status=status.value; store.saveNow(); renderPantryCard(); }); const title=el('div',{},item.name); const meta=el('div',{class:'meta'}); meta.append(status); row.append(el('div'), title, meta); card.append(row); }); }
+function renderPantryCard(){
+  const token = startViewportPreservation(!!$('#view-pantry') && !$('#view-pantry').hidden && !!$('#pantry-review') && !$('#pantry-review').hidden);
+  try {
+    const c=findCategoryById(pantryReviewState.ids[pantryReviewState.idx]); const card=$('#pcard'); card.innerHTML=''; if(!c){ card.append(el('div',{class:'empty'},'Review complete.')); return;} const header=el('div',{class:'story-header'}); header.append(el('div',{class:'story-title'},c.name)); card.append(header); (c.items||[]).forEach(item=>{ const row=el('div',{class:'task'}); row.classList.add(`pantry-${item.status}`); const status=el('select',{class:'priority-select'}); [['to_buy','To buy'],['stocked','Stocked'],['not_needed','Not needed']].forEach(([v,t])=>status.append(el('option',{value:v},t))); status.value=item.status; status.addEventListener('change',()=>{ item.status=status.value; store.saveNow(); renderPantryCard(); }); const title=el('div',{},item.name); const meta=el('div',{class:'meta'}); meta.append(status); row.append(el('div'), title, meta); card.append(row); });
+  } finally {
+    finishViewportPreservation(token);
+  }
+}
 function pantryNext(){ if(pantryReviewState.idx<pantryReviewState.ids.length-1){ pantryReviewState.idx++; renderPantryProgress(); renderPantryCard(); savePantryReviewProgress(); } else { $('#pantry-review-stage').hidden=true; const e=$('#pantry-review-empty'); e.textContent='Review complete.'; e.hidden=false; clearPantryReviewProgress(); } }
 function pantryPrev(){ if(pantryReviewState.idx>0){ pantryReviewState.idx--; renderPantryProgress(); renderPantryCard(); savePantryReviewProgress(); } }
 function pantryOnReviewVisibility(){ const list=pantryFlattenCats(); const has=list.length>0; const e=$('#pantry-review-empty'); e.textContent = has ? 'Press Start Review to begin.' : 'No categories/items yet. Add some in Prepare.'; e.hidden=false; $('#pantry-review-stage').hidden=true; }
@@ -4268,7 +4295,13 @@ function restorePantryReviewProgressIfAny(){ try { const raw=localStorage.getIte
 function shoppingItems(){ const out=[]; const cats=pantryFlattenCats(); cats.forEach(c=> (c.items||[]).forEach(it=> out.push({cat:c,item:it})) ); return out; }
 function needsBuying(item){ return item.status === 'to_buy'; }
 function nodePathLike(n){ const names=[]; let cur=n; const all=pantryFlattenCats(); const parent=new Map(); all.forEach(c=> (c.children||[]).forEach(ch=> parent.set(ch.id,c.id))); while(cur){ names.unshift(cur.name); const pid=parent.get(cur.id); cur = pid ? all.find(c=>c.id===pid) : null; } return names.join(' › '); }
-function renderShoppingList(){ const root=$('#shopping-root'); if(!root) return; root.innerHTML=''; const arr=shoppingItems().filter(x=>needsBuying(x.item)); if(!arr.length){ root.append(el('div',{class:'empty'},'Nothing to buy.')); return;} const byCat=new Map(); arr.forEach(({cat,item})=>{ const k=nodePathLike(cat); if(!byCat.has(k)) byCat.set(k,[]); byCat.get(k).push({cat,item}); }); for(const [path,list] of byCat.entries()){ root.append(el('div',{class:'subtext'},path)); list.forEach(({cat,item})=>{ const row=el('div',{class:'task'}); row.classList.add('pantry-to_buy'); const cb=el('input',{type:'checkbox'}); cb.checked=false; cb.addEventListener('change',()=>{ if(cb.checked){ item.status='stocked'; store.saveNow(); renderShoppingList(); }}); const main=el('div',{},item.name); const meta=el('div',{class:'meta'}); const del=el('button',{class:'btn ghost'},'Remove'); del.addEventListener('click',()=>{ cat.items=cat.items.filter(x=>x.id!==item.id); store.saveNow(); renderShoppingList(); renderPantryPrepare(); }); meta.append(del); row.append(cb, main, meta); root.append(row); }); }
+function renderShoppingList(){
+  const token = startViewportPreservation(!!$('#view-pantry') && !$('#view-pantry').hidden && !!$('#pantry-shopping') && !$('#pantry-shopping').hidden);
+  try {
+    const root=$('#shopping-root'); if(!root) return; root.innerHTML=''; const arr=shoppingItems().filter(x=>needsBuying(x.item)); if(!arr.length){ root.append(el('div',{class:'empty'},'Nothing to buy.')); return;} const byCat=new Map(); arr.forEach(({cat,item})=>{ const k=nodePathLike(cat); if(!byCat.has(k)) byCat.set(k,[]); byCat.get(k).push({cat,item}); }); for(const [path,list] of byCat.entries()){ root.append(el('div',{class:'subtext'},path)); list.forEach(({cat,item})=>{ const row=el('div',{class:'task'}); row.classList.add('pantry-to_buy'); const cb=el('input',{type:'checkbox'}); cb.checked=false; cb.addEventListener('change',()=>{ if(cb.checked){ item.status='stocked'; store.saveNow(); renderShoppingList(); }}); const main=el('div',{},item.name); const meta=el('div',{class:'meta'}); const del=el('button',{class:'btn ghost'},'Remove'); del.addEventListener('click',()=>{ cat.items=cat.items.filter(x=>x.id!==item.id); store.saveNow(); renderShoppingList(); renderPantryPrepare(); }); meta.append(del); row.append(cb, main, meta); root.append(row); }); }
+  } finally {
+    finishViewportPreservation(token);
+  }
 }
 
 function buildShoppingText(){
@@ -4615,6 +4648,33 @@ function isElementOnScreen(node) {
   return rect.top >= 72 && rect.bottom <= vh - 20;
 }
 
+let viewportPreserveDepth = 0;
+
+function startViewportPreservation(active = true) {
+  if (!active || typeof window === 'undefined' || typeof document === 'undefined') return null;
+  const token = {
+    outer: viewportPreserveDepth === 0,
+    prevY: window.scrollY,
+  };
+  viewportPreserveDepth += 1;
+  return token;
+}
+
+function finishViewportPreservation(token, restoreFn = null) {
+  if (!token) return;
+  viewportPreserveDepth = Math.max(0, viewportPreserveDepth - 1);
+  if (!token.outer) return;
+  requestAnimationFrame(() => {
+    if (typeof restoreFn === 'function') {
+      const handled = restoreFn();
+      if (handled !== false) return;
+    }
+    const maxY = Math.max(0, (document.documentElement?.scrollHeight || 0) - window.innerHeight);
+    const nextY = Math.max(0, Math.min(token.prevY, maxY));
+    if (Math.abs(window.scrollY - nextY) > 1) window.scrollTo(0, nextY);
+  });
+}
+
 function findTaskCardElement(taskId, root = document) {
   if (!taskId || !root) return null;
   const rawTaskId = String(taskId);
@@ -4693,45 +4753,41 @@ function flushPendingSeriesRevealUi() {
 }
 
 function rerenderTasksPaneKeepViewport(anchorTaskId = null) {
-  const prevY = window.scrollY;
+  const token = startViewportPreservation(true);
   const anchor = anchorTaskId ? findTaskCardElement(anchorTaskId) : null;
   const prevTop = anchor ? anchor.getBoundingClientRect().top : null;
   renderTasksPane();
-  requestAnimationFrame(() => {
+  finishViewportPreservation(token, () => {
     if (anchorTaskId && prevTop != null) {
       const nextAnchor = findTaskCardElement(anchorTaskId);
       if (nextAnchor) {
         const delta = nextAnchor.getBoundingClientRect().top - prevTop;
         if (Math.abs(delta) > 1) window.scrollBy(0, delta);
-        return;
+        return true;
       }
     }
-    const maxY = Math.max(0, (document.documentElement?.scrollHeight || 0) - window.innerHeight);
-    const nextY = Math.max(0, Math.min(prevY, maxY));
-    if (Math.abs(window.scrollY - nextY) > 1) window.scrollTo(0, nextY);
+    return false;
   });
 }
 
 function rerenderReviewStoryKeepViewport(anchorTaskId = null, revealTaskId = null) {
   const storyRoot = $('#story-card');
-  const prevY = window.scrollY;
+  const token = startViewportPreservation(true);
   const anchor = anchorTaskId ? findTaskCardElement(anchorTaskId, storyRoot || document) : null;
   const prevTop = anchor ? anchor.getBoundingClientRect().top : null;
   renderStoryCard();
-  requestAnimationFrame(() => {
+  finishViewportPreservation(token, () => {
     const nextRoot = $('#story-card') || document;
-    if (revealTaskId && revealTaskCard(revealTaskId, { block: 'nearest', root: nextRoot })) return;
+    if (revealTaskId && revealTaskCard(revealTaskId, { block: 'nearest', root: nextRoot })) return true;
     if (anchorTaskId && prevTop != null) {
       const nextAnchor = findTaskCardElement(anchorTaskId, nextRoot);
       if (nextAnchor) {
         const delta = nextAnchor.getBoundingClientRect().top - prevTop;
         if (Math.abs(delta) > 1) window.scrollBy(0, delta);
-        return;
+        return true;
       }
     }
-    const maxY = Math.max(0, (document.documentElement?.scrollHeight || 0) - window.innerHeight);
-    const nextY = Math.max(0, Math.min(prevY, maxY));
-    if (Math.abs(window.scrollY - nextY) > 1) window.scrollTo(0, nextY);
+    return false;
   });
 }
 
@@ -4783,7 +4839,12 @@ function bindTasksStickyVisibility(stickyBar, filterPanel) {
 }
 
 function renderTasksPane() {
-  return renderTasksPaneV2();
+  const token = startViewportPreservation(!!$('#view-tasks') && !$('#view-tasks').hidden);
+  try {
+    return renderTasksPaneV2();
+  } finally {
+    finishViewportPreservation(token);
+  }
   const root = $('#tasks-root');
   if (!root) {
     clearTasksStickyVisibilitySync();
