@@ -3847,6 +3847,7 @@ let tasksViewState = {
   priorityValues: [],
   focusTaskId: null,
   showBlocked: false,
+  showHiddenChildren: false,
   searchText: '',
   archiveAfterDays: 7,
   showArchived: false,
@@ -3887,6 +3888,7 @@ function saveTasksViewState() {
     priorityValues: tasksViewState.priorityValues,
     focusTaskId: tasksViewState.focusTaskId,
     showBlocked: tasksViewState.showBlocked,
+    showHiddenChildren: tasksViewState.showHiddenChildren,
     searchText: tasksViewState.searchText,
     archiveAfterDays: tasksViewState.archiveAfterDays,
     showArchived: tasksViewState.showArchived,
@@ -3907,6 +3909,7 @@ function loadTasksViewState() {
   tasksViewState.priorityValues = normalizePriorityList(saved.priorityValues || []);
   tasksViewState.focusTaskId = saved.focusTaskId || null;
   tasksViewState.showBlocked = !!saved.showBlocked;
+  tasksViewState.showHiddenChildren = !!saved.showHiddenChildren;
   tasksViewState.searchText = (saved.searchText || '').trim();
   tasksViewState.archiveAfterDays = Number(saved.archiveAfterDays) > 0 ? Number(saved.archiveAfterDays) : 7;
   tasksViewState.showArchived = !!saved.showArchived;
@@ -5535,8 +5538,9 @@ function renderTasksPaneV2() {
   }
 
   const threadNodeId = tasksViewState.threadNodeId || null;
-  const focusTaskId = tasksViewState.focusTaskId || null;
   const refById = new Map(allTaskRefs.map((ref) => [ref.task.id, ref]));
+  const rawFocusTaskId = tasksViewState.focusTaskId || null;
+  const focusTaskId = rawFocusTaskId ? (refById.get(rawFocusTaskId)?.parentTask?.id || rawFocusTaskId) : null;
   const focusedTaskName = focusTaskId ? (refById.get(focusTaskId)?.task?.text || 'Task') : '';
   const metaById = new Map();
 
@@ -5552,7 +5556,7 @@ function renderTasksPaneV2() {
     });
   });
 
-  const matchesDirect = (ref) => {
+  const matchStateForRef = (ref) => {
     const task = ref.task;
     const meta = metaById.get(task.id);
     const focusScope = !focusTaskId || task.id === focusTaskId || ref.ancestors.some((ancestor) => ancestor.id === focusTaskId);
@@ -5572,10 +5576,25 @@ function renderTasksPaneV2() {
     ].join(' ').toLowerCase();
     const okSearch = !textNeedle || hay.includes(textNeedle);
     const okAvailability = tasksViewState.showBlocked || meta.done || meta.available || !!focusTaskId;
-    return okThread && okCtx && okLoc && okTime && okPriority && okArchived && okSearch && focusScope && okAvailability;
+    const base = okThread && okCtx && okLoc && okTime && okPriority && okArchived && focusScope;
+    return { base, okSearch, okAvailability };
   };
-
-  const directMatchIds = new Set(allTaskRefs.filter(matchesDirect).map((ref) => ref.task.id));
+  const matchStateById = new Map(allTaskRefs.map((ref) => [ref.task.id, matchStateForRef(ref)]));
+  const directMatchIds = new Set(allTaskRefs
+    .filter((ref) => {
+      const state = matchStateById.get(ref.task.id);
+      return state?.base && state?.okSearch && state?.okAvailability;
+    })
+    .map((ref) => ref.task.id));
+  const treeMatchIds = new Set(allTaskRefs
+    .filter((ref) => {
+      const state = matchStateById.get(ref.task.id);
+      return state?.base && state?.okSearch;
+    })
+    .map((ref) => ref.task.id));
+  const expandedChildIds = new Set(allTaskRefs
+    .filter((ref) => matchStateById.get(ref.task.id)?.base)
+    .map((ref) => ref.task.id));
   const visibleById = new Map();
   const markVisible = (task) => {
     const childVisible = taskChildList(task).some((child) => markVisible(child));
@@ -5635,7 +5654,18 @@ function renderTasksPaneV2() {
   };
   const sortBy = ['priority', 'due', 'path'].includes(tasksViewState.sortBy) ? tasksViewState.sortBy : 'priority';
   const sortRefs = (refs) => refs.slice().sort(sorters[sortBy]);
-  const visibleChildRefs = (task) => taskChildList(task).map((child) => refById.get(child.id)).filter((ref) => ref && visibleById.get(ref.task.id));
+  const visibleChildRefs = (task) => {
+    const allowedIds = tasksViewState.showHiddenChildren ? expandedChildIds : treeMatchIds;
+    return taskChildList(task)
+      .map((child) => refById.get(child.id))
+      .filter((ref) => ref && allowedIds.has(ref.task.id));
+  };
+  const hiddenChildRefs = (task) => {
+    if (tasksViewState.showHiddenChildren) return [];
+    return taskChildList(task)
+      .map((child) => refById.get(child.id))
+      .filter((ref) => ref && expandedChildIds.has(ref.task.id) && !treeMatchIds.has(ref.task.id));
+  };
   const childSummary = (task) => {
     const children = taskChildList(task);
     if (!children.length) return '';
@@ -5656,6 +5686,8 @@ function renderTasksPaneV2() {
       const next = children.find((child) => !child.completed);
       parts.push(next ? `Next: ${next.text || 'Task'}` : 'All done');
     }
+    const hidden = hiddenChildRefs(task).length;
+    if (hidden) parts.push(`${hidden} hidden`);
     return parts.join(' • ');
   };
 
@@ -5666,6 +5698,11 @@ function renderTasksPaneV2() {
       renderStoryCard();
     }
     renderTasksPane();
+  };
+  const normalizeFocusAfterCompletion = (ref, checked) => {
+    if (!checked || tasksViewState.focusTaskId !== ref.task.id) return;
+    tasksViewState.focusTaskId = ref.parentTask ? ref.parentTask.id : null;
+    saveTasksViewState();
   };
   const openComposer = (kind, taskId) => {
     taskComposerState = { kind, taskId };
@@ -5725,6 +5762,7 @@ function renderTasksPaneV2() {
     cb.addEventListener('change', () => {
       if (taskHasChildren(task)) setTaskTreeCompleted(task, cb.checked);
       else setTaskCompleted(task, cb.checked);
+      normalizeFocusAfterCompletion(ref, cb.checked);
       store.saveNow();
       rerenderEverywhere();
     });
@@ -5851,6 +5889,20 @@ function renderTasksPaneV2() {
       });
       actionRow.append(deleteBtn);
       item.append(actionRow);
+
+      const hiddenChildren = hiddenChildRefs(task);
+      if (hiddenChildren.length) {
+        const hiddenRow = el('div', { class: 'task-hidden-row' });
+        hiddenRow.append(el('span', { class: 'subtext' }, `${hiddenChildren.length} subtask${hiddenChildren.length === 1 ? '' : 's'} hidden by current filters`));
+        const revealBtn = el('button', { class: 'btn ghost btn-lite', type: 'button' }, 'Show hidden subtasks');
+        revealBtn.addEventListener('click', () => {
+          tasksViewState.showHiddenChildren = true;
+          saveTasksViewState();
+          renderTasksPane();
+        });
+        hiddenRow.append(revealBtn);
+        item.append(hiddenRow);
+      }
     }
 
     if (isPausePanelOpen('tasks', task.id)) item.append(buildPauseControls(task.id, () => renderTasksPane()));
@@ -5898,6 +5950,7 @@ function renderTasksPaneV2() {
       tasksViewState.priorityValues = [];
       tasksViewState.focusTaskId = null;
       tasksViewState.showBlocked = false;
+      tasksViewState.showHiddenChildren = false;
       tasksViewState.searchText = '';
       tasksViewState.showArchived = false;
       tasksViewState.sortBy = 'priority';
@@ -5973,6 +6026,11 @@ function renderTasksPaneV2() {
     quickRow.append(
       mkToggle('Show blocked', !!tasksViewState.showBlocked, (value) => {
         tasksViewState.showBlocked = value;
+        saveTasksViewState();
+        renderTasksPane();
+      }),
+      mkToggle('Show hidden subtasks', !!tasksViewState.showHiddenChildren, (value) => {
+        tasksViewState.showHiddenChildren = value;
         saveTasksViewState();
         renderTasksPane();
       }),

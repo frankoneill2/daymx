@@ -1339,6 +1339,18 @@ button:focus-visible {
   gap: 6px;
 }
 
+.task-hidden-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 7px 9px;
+  border: 1px dashed color-mix(in srgb, var(--border-soft) 82%, transparent);
+  border-radius: 10px;
+  background: rgba(12, 23, 36, 0.56);
+}
+
 .task-tree-children {
   display: flex;
   flex-direction: column;
@@ -3057,6 +3069,10 @@ button.pill-btn.add {
   .task-tree-children {
     margin-left: 10px;
     padding-left: 8px;
+  }
+
+  .task-hidden-row {
+    align-items: stretch;
   }
 
   .task-compose-row {
