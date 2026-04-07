@@ -3215,179 +3215,11 @@ function renderStoryCard() {
   const depMap = allTaskRefMap();
   const now = new Date();
   const movingEntries = movingTaskEntries('review', n.id);
-  if (!n.tasks.length && !movingEntries.length) tasksEl.append(el('div', { class: 'empty' }, 'No tasks yet.'));
-  for (const t of n.tasks) {
-    const stats = seriesStats(t);
-    const isSeries = !!stats;
-    const done = isSeries ? (stats.remaining === 0) : !!t.completed;
-    const item = el('div', { class: 'task review-task-card' + (done ? ' completed' : '') });
-    if (isSeries) item.classList.add('series-task');
-    const mutateReviewTask = (updater, options = {}) => {
-      const liveNode = findNodeById(store.data.threads, n.id);
-      const ti = liveNode?.tasks?.findIndex((x) => x.id === t.id) ?? -1;
-      if (ti < 0) return false;
-      updater(liveNode.tasks[ti], liveNode);
-      store.saveNow();
-      if (options.renderThreads) renderThreads();
-      renderProgress();
-      renderStoryCard();
-      if (!$('#view-tasks').hidden) renderTasksPane();
-      return true;
-    };
-    const cb = el('input', { type: 'checkbox' });
-    cb.checked = !!done;
-    if (isSeries) {
-      cb.title = done ? 'Mark project open' : 'Mark task tree done';
-      cb.addEventListener('change', () => {
-        mutateReviewTask((liveTask) => {
-          setTaskTreeCompleted(liveTask, cb.checked);
-        }, { renderThreads: true });
-      });
-    } else {
-      cb.addEventListener('change', () => {
-        mutateReviewTask((liveTask) => {
-          setTaskCompleted(liveTask, cb.checked);
-        });
-      });
-    }
-    const main = el('div', { class: 'review-task-main' });
-    const titleInput = el('textarea', { class: 'task-title-input', rows: '1' });
-    initTaskTextInput(titleInput);
-    titleInput.value = t.text;
-    titleInput.addEventListener('change', () => {
-      const next = titleInput.value.trim();
-      if (!next) {
-        titleInput.value = t.text;
-        return;
-      }
-      mutateReviewTask((liveTask) => {
-        liveTask.text = next;
-      }, { renderThreads: true });
-    });
-    main.append(titleInput);
-    const btns = el('div', { class: 'meta review-task-actions' });
-    const pri = el('select', { class: 'priority-select', title: 'Priority' });
-    for (let i = 1; i <= 5; i++) pri.append(el('option', { value: String(i) }, i));
-    pri.value = String(t.priority || 3);
-    pri.addEventListener('change', () => {
-      mutateReviewTask((liveTask) => {
-        liveTask.priority = Number(pri.value);
-      });
-    });
-    const threadSel = buildTaskThreadSelect(n.id, t, 'review', () => {
-      renderThreads();
-      renderProgress();
-      renderStoryCard();
-      if (!$('#view-tasks').hidden) renderTasksPane();
-    });
-    const delBtn = createInlineIconAction('Remove task', () => {
-      const live = findNodeById(store.data.threads, n.id);
-      live.tasks = live.tasks.filter(x => x.id !== t.id);
-      store.saveNow();
-      renderProgress();
-      renderStoryCard();
-      renderThreads();
-      if (!$('#view-tasks').hidden) renderTasksPane();
-    }, '✕', 'danger');
-    const avail = buildAvailabilityControls(n.id, t.id, () => renderStoryCard());
-    avail.hidden = !isTagPanelOpen('review', t.id);
-    const availBtn = el('button', { class: 'btn ghost btn-lite' }, 'Tags');
-    availBtn.addEventListener('click', () => {
-      avail.hidden = !avail.hidden;
-      setTagPanelOpen('review', t.id, !avail.hidden);
-    });
-    btns.append(pri, threadSel, availBtn, delBtn);
-    main.append(buildTaskStateBadges(t, { now, depMap, done }));
-    const reason = availabilityReason(t, now, null, depMap);
-    const tagline = buildTaskTagline(t, reason, {
-      includeSeries: false,
-      quickEdit: {
-        showEmpty: true,
-        onDurationCycle: () => {
-          mutateReviewTask((liveTask) => {
-            cycleTaskDuration(liveTask);
-          }, { renderThreads: true });
-        },
-        onLocationCycle: () => {
-          mutateReviewTask((liveTask) => {
-            cycleTaskPresetLocation(liveTask);
-          }, { renderThreads: true });
-        },
-      },
-    });
-    if (tagline) main.append(tagline);
-    if (isSeries) {
-      const panel = buildReviewSeriesPanel(t, {
-        editable: true,
-        onToggle: (subtaskId, completed) => {
-          mutateReviewTask((liveTask) => {
-            const subtask = taskChildList(liveTask).find((s) => s.id === subtaskId);
-            if (!subtask) return;
-            setSubtaskCompleted(liveTask, subtask, completed);
-          }, { renderThreads: true });
-        },
-        onTextChange: (subtaskId, text) => {
-          mutateReviewTask((liveTask) => {
-            const subtask = taskChildList(liveTask).find((s) => s.id === subtaskId);
-            if (!subtask) return;
-            subtask.text = text;
-          }, { renderThreads: true });
-        },
-        onRankChange: (subtaskId, rank) => {
-          mutateReviewTask((liveTask) => {
-            const subtask = taskChildList(liveTask).find((s) => s.id === subtaskId);
-            if (!subtask) return;
-            subtask.rank = Math.max(1, Number(rank) || 1);
-            sortSeriesByRankOrder(liveTask);
-          }, { renderThreads: true });
-        },
-        onRemove: (subtaskId) => {
-          mutateReviewTask((liveTask) => {
-            liveTask.children = taskChildList(liveTask).filter((s) => s.id !== subtaskId);
-            if (!liveTask.children.length) {
-              liveTask.completed = false;
-              liveTask.completedAt = null;
-            } else {
-              sortSeriesByRankOrder(liveTask);
-            }
-          }, { renderThreads: true });
-        },
-        onAdd: (text, rank) => {
-          mutateReviewTask((liveTask) => {
-            addSubtaskToTask(liveTask, text, rank);
-          }, { renderThreads: true });
-        },
-      });
-      if (panel) main.append(panel);
-    }
-    if (!isSeries) {
-      const breakdown = buildBreakIntoStepsCta((stepText) => {
-        const live = findNodeById(store.data.threads, n.id);
-        const ti = live?.tasks?.findIndex(x => x.id === t.id) ?? -1;
-        if (ti < 0) return false;
-        addSubtaskToTask(live.tasks[ti], stepText, 1);
-        setTagPanelOpen('review', t.id, true);
-        store.saveNow();
-        renderThreads();
-        renderProgress();
-        renderStoryCard();
-        showToast('Series started');
-        return true;
-      });
-      main.append(breakdown);
-    }
-    const headline = el('div', { class: 'task-card-headline' });
-    headline.append(cb, main);
-    const controls = el('div', { class: 'task-card-controls review-task-controls' });
-    controls.append(btns);
-    item.append(headline, controls);
-    // Availability controls (Review, hidden by default)
-    item.append(avail);
-    // Status tint classes
-    if (done) item.classList.add('status-completed');
-    else if (isTaskAvailable(t, now, null, depMap)) item.classList.add('status-available');
-    else item.classList.add('status-blocked');
-    tasksEl.append(item);
+  const reviewCards = buildReviewTaskCards(n, depMap, now);
+  if (!reviewCards.hasItems && !movingEntries.length) {
+    tasksEl.append(el('div', { class: 'empty' }, 'No tasks yet.'));
+  } else {
+    tasksEl.append(reviewCards.content);
   }
   movingEntries.forEach((entry) => {
     tasksEl.append(buildMovingTaskNotice(entry));
@@ -3474,6 +3306,271 @@ function renderReviewSummary() {
   rerun.addEventListener('click', startReview);
   footer.append(openTasks, rerun);
   summary.append(header, metrics, list, footer);
+}
+
+function mutateReviewTaskWithRefresh(taskId, updater, opts = {}) {
+  const ref = findTaskRefById(taskId);
+  if (!ref || typeof updater !== 'function') return false;
+  updater(ref.task, ref);
+  store.saveNow();
+  if (opts.renderThreads) renderThreads();
+  renderProgress();
+  if (!$('#view-tasks').hidden) renderTasksPane();
+  rerenderReviewStoryKeepViewport(opts.anchorTaskId || taskId, opts.revealTaskId || null);
+  return true;
+}
+
+function buildReviewTaskCards(node, depMap, now = new Date()) {
+  const refs = flattenTaskRefs().filter((ref) => ref.node.id === node.id);
+  const refById = new Map(refs.map((ref) => [ref.task.id, ref]));
+  if (reviewTaskComposerState && !refById.has(reviewTaskComposerState.taskId)) {
+    reviewTaskComposerState = null;
+  }
+
+  const metaById = new Map();
+  refs.forEach((ref) => {
+    const task = ref.task;
+    const done = !!task.completed;
+    metaById.set(task.id, {
+      done,
+      available: done ? true : isTaskAvailable(ref, now, null, depMap),
+      reason: availabilityReason(ref, now, null, depMap),
+      due: dueStatus(task, now),
+    });
+  });
+
+  const childSummary = (task) => {
+    const children = taskChildList(task);
+    if (!children.length) return '';
+    const ready = children.filter((child) => {
+      const meta = metaById.get(child.id);
+      return meta && !meta.done && meta.available;
+    }).length;
+    const blocked = children.filter((child) => {
+      const meta = metaById.get(child.id);
+      return meta && !meta.done && !meta.available;
+    }).length;
+    const starred = children.filter((child) => !child.completed && child.starred).length;
+    const parts = [`${children.length} subtask${children.length === 1 ? '' : 's'}`];
+    if (ready) parts.push(`${ready} ready`);
+    if (blocked) parts.push(`${blocked} blocked`);
+    if (starred) parts.push(`${starred} starred`);
+    if (taskChildMode(task) === 'sequential') {
+      const next = children.find((child) => !child.completed);
+      parts.push(next ? `Next: ${next.text || 'Task'}` : 'All done');
+    }
+    return parts.join(' • ');
+  };
+
+  const openComposer = (kind, taskId) => {
+    reviewTaskComposerState = { kind, taskId };
+    rerenderReviewStoryKeepViewport(taskId);
+  };
+
+  const closeComposer = (taskId = null) => {
+    reviewTaskComposerState = null;
+    rerenderReviewStoryKeepViewport(taskId);
+  };
+
+  const appendComposer = (host, ref) => {
+    if (!reviewTaskComposerState || reviewTaskComposerState.taskId !== ref.task.id) return;
+    const kind = reviewTaskComposerState.kind;
+    const row = el('div', { class: 'task-compose-row' });
+    const input = el('input', { type: 'text', placeholder: kind === 'sibling' ? 'Add sibling task…' : 'Add subtask…' });
+    const addBtn = el('button', { class: 'btn primary', type: 'button' }, kind === 'sibling' ? 'Add sibling' : 'Add subtask');
+    const cancelBtn = el('button', { class: 'btn ghost', type: 'button' }, 'Cancel');
+    const commit = () => {
+      const text = input.value.trim();
+      if (!text) {
+        input.focus();
+        return;
+      }
+      const created = kind === 'sibling' ? addSiblingTask(ref.task.id, text) : addChildTask(ref.task.id, text);
+      if (!created) return;
+      reviewTaskComposerState = null;
+      if (kind === 'child') collapsedTaskTrees.delete(ref.task.id);
+      store.saveNow();
+      renderThreads();
+      renderProgress();
+      if (!$('#view-tasks').hidden) renderTasksPane();
+      rerenderReviewStoryKeepViewport(ref.task.id, created.id);
+      showToast(kind === 'sibling' ? 'Sibling task added' : 'Subtask added');
+    };
+    bindEnterToButton(input, addBtn);
+    addBtn.addEventListener('click', commit);
+    cancelBtn.addEventListener('click', () => closeComposer(ref.task.id));
+    row.append(input, addBtn, cancelBtn);
+    host.append(row);
+    requestAnimationFrame(() => input.focus());
+  };
+
+  const makeTaskCard = (ref) => {
+    const task = ref.task;
+    const meta = metaById.get(task.id);
+    const depth = Number(ref.depth) || 0;
+    const item = el('div', {
+      class: `task task-tree-card review-task-card${meta?.done ? ' completed' : ''}${depth ? ' nested-task-card' : ''}`,
+      style: `border-left:6px solid ${ref.root?.color || 'var(--accent)'}`,
+      'data-task-id': task.id,
+    });
+    item.style.setProperty('--task-depth', String(depth));
+    if (task.starred) item.classList.add('is-starred');
+    if (meta?.due?.state === 'overdue') item.classList.add('due-overdue');
+    else if (meta?.due?.state === 'soon') item.classList.add('due-soon');
+
+    const head = el('div', { class: 'task-tree-head' });
+    const titleGroup = el('div', { class: 'task-tree-title-group' });
+    const cb = el('input', { type: 'checkbox' });
+    cb.checked = !!meta?.done;
+    cb.addEventListener('change', () => {
+      mutateReviewTaskWithRefresh(task.id, (liveTask) => {
+        if (taskHasChildren(liveTask)) setTaskTreeCompleted(liveTask, cb.checked);
+        else setTaskCompleted(liveTask, cb.checked);
+      }, { renderThreads: true, anchorTaskId: task.id });
+    });
+    titleGroup.append(cb);
+    if (taskHasChildren(task)) {
+      const toggle = el('button', { class: 'btn ghost task-tree-toggle', type: 'button' }, collapsedTaskTrees.has(task.id) ? '▸' : '▾');
+      toggle.addEventListener('click', () => {
+        if (collapsedTaskTrees.has(task.id)) collapsedTaskTrees.delete(task.id);
+        else collapsedTaskTrees.add(task.id);
+        rerenderReviewStoryKeepViewport(task.id);
+      });
+      titleGroup.append(toggle);
+    } else {
+      titleGroup.append(el('span', { class: 'task-tree-spacer', 'aria-hidden': 'true' }, ''));
+    }
+
+    const titleWrap = el('div', { class: 'task-tree-title-wrap' });
+    const titleInput = el('textarea', { class: 'task-title-input task-tree-title', rows: '1' });
+    initTaskTextInput(titleInput);
+    titleInput.value = task.text || '';
+    titleInput.addEventListener('change', () => {
+      const next = titleInput.value.trim();
+      if (!next) {
+        titleInput.value = task.text || '';
+        return;
+      }
+      mutateReviewTaskWithRefresh(task.id, (liveTask) => {
+        liveTask.text = next;
+      }, { renderThreads: true, anchorTaskId: task.id });
+    });
+    titleWrap.append(titleInput);
+    const infoParts = [];
+    if (!meta?.done && meta?.reason) infoParts.push(meta.reason);
+    if (!meta?.done && (meta?.due?.state === 'overdue' || meta?.due?.state === 'soon')) infoParts.push(meta.due.label);
+    const summary = childSummary(task);
+    if (summary) infoParts.push(summary);
+    if (infoParts.length) titleWrap.append(el('div', { class: 'task-tree-subline' }, infoParts.join(' • ')));
+    head.append(titleGroup, titleWrap);
+
+    const tools = el('div', { class: 'task-tree-tools' });
+    const starBtn = el('button', {
+      class: `task-icon-btn${task.starred ? ' active star' : ''}`,
+      type: 'button',
+      title: task.starred ? 'Remove star' : 'Star task',
+      'aria-label': task.starred ? 'Remove star' : 'Star task',
+    }, task.starred ? '★' : '☆');
+    starBtn.addEventListener('click', () => {
+      mutateReviewTaskWithRefresh(task.id, (liveTask) => {
+        liveTask.starred = !liveTask.starred;
+      }, { anchorTaskId: task.id });
+    });
+    const pauseBtn = el('button', {
+      class: `task-icon-btn${taskHasPauseState(task, depMap) ? ' active pause' : ''}`,
+      type: 'button',
+      title: 'Pause and dependencies',
+      'aria-label': 'Pause and dependencies',
+    }, '⏸');
+    pauseBtn.addEventListener('click', () => {
+      const next = !isPausePanelOpen('review', task.id);
+      setPausePanelOpen('review', task.id, next);
+      if (next) setTagPanelOpen('review', task.id, false);
+      rerenderReviewStoryKeepViewport(task.id);
+    });
+    const detailBtn = el('button', {
+      class: `task-icon-btn${isTagPanelOpen('review', task.id) ? ' active' : ''}`,
+      type: 'button',
+      title: 'Task details',
+      'aria-label': 'Task details',
+    }, '⋯');
+    detailBtn.addEventListener('click', () => {
+      const next = !isTagPanelOpen('review', task.id);
+      setTagPanelOpen('review', task.id, next);
+      if (next) setPausePanelOpen('review', task.id, false);
+      rerenderReviewStoryKeepViewport(task.id);
+    });
+    tools.append(starBtn, pauseBtn, detailBtn);
+    head.append(tools);
+    item.append(head);
+
+    const badgeRow = buildTaskStateBadges(task, { now, depMap, done: meta?.done, ref });
+    if (taskHasChildren(task)) {
+      badgeRow.append(el('span', { class: 'pill task-state-chip tag' }, taskChildMode(task) === 'sequential' ? 'Sequential' : 'Parallel'));
+    }
+    if (task.starred) badgeRow.append(el('span', { class: 'pill task-state-chip warn' }, 'Starred'));
+    if (taskPins(task).length) badgeRow.append(el('span', { class: 'pill task-state-chip tag' }, `${taskPins(task).length} pin${taskPins(task).length === 1 ? '' : 's'}`));
+    item.append(badgeRow);
+    item.append(buildTaskMetaRow(task, { variant: 'compact', includePriority: false }));
+
+    const pinPreview = buildTaskPinPreviewList(task, { maxItems: 2 });
+    if (pinPreview) item.append(pinPreview);
+
+    const actionRow = el('div', { class: 'task-tree-action-row' });
+    const addChildBtn = el('button', { class: 'btn ghost btn-lite', type: 'button' }, '+ Add subtask');
+    addChildBtn.addEventListener('click', () => openComposer('child', task.id));
+    actionRow.append(addChildBtn);
+    if (ref.parentTask) {
+      const addSiblingBtn = el('button', { class: 'btn ghost btn-lite', type: 'button' }, '+ Add sibling');
+      addSiblingBtn.addEventListener('click', () => openComposer('sibling', task.id));
+      actionRow.append(addSiblingBtn);
+    }
+    const deleteBtn = el('button', { class: 'btn ghost danger btn-lite', type: 'button' }, 'Delete');
+    deleteBtn.addEventListener('click', () => {
+      removeTaskById(task.id);
+      if (reviewTaskComposerState?.taskId === task.id) reviewTaskComposerState = null;
+      store.saveNow();
+      renderThreads();
+      renderProgress();
+      if (!$('#view-tasks').hidden) renderTasksPane();
+      rerenderReviewStoryKeepViewport(ref.parentTask?.id || null);
+      showToast('Task removed');
+    });
+    actionRow.append(deleteBtn);
+    item.append(actionRow);
+
+    if (isPausePanelOpen('review', task.id)) {
+      item.append(buildPauseControls(task.id, () => rerenderReviewStoryKeepViewport(task.id)));
+    }
+    if (isTagPanelOpen('review', task.id)) {
+      item.append(buildAvailabilityControls(ref.node.id, task.id, () => rerenderReviewStoryKeepViewport(task.id)));
+    }
+
+    appendComposer(item, ref);
+
+    const children = taskChildList(task)
+      .map((child) => refById.get(child.id))
+      .filter(Boolean);
+    const composerRef = reviewTaskComposerState ? refById.get(reviewTaskComposerState.taskId) : null;
+    const forceOpen = !!composerRef && composerRef.ancestors.some((ancestor) => ancestor.id === task.id);
+    const expanded = taskHasChildren(task) && (!collapsedTaskTrees.has(task.id) || forceOpen);
+    if (children.length && expanded) {
+      const kids = el('div', { class: 'task-tree-children' });
+      children.forEach((childRef) => kids.append(makeTaskCard(childRef)));
+      item.append(kids);
+    }
+
+    if (meta?.done) item.classList.add('status-completed');
+    else if (meta?.available) item.classList.add('status-available');
+    else item.classList.add('status-blocked');
+    return item;
+  };
+
+  const fragment = document.createDocumentFragment();
+  refs
+    .filter((ref) => ref.depth === 0)
+    .forEach((ref) => fragment.append(makeTaskCard(ref)));
+  return { hasItems: refs.some((ref) => ref.depth === 0), content: fragment };
 }
 
 function nextStory() {
@@ -3747,6 +3844,9 @@ function switchView(name) {
   if (previousView === 'tasks' && previousView !== name) {
     deferredCompletedTaskIds.clear();
     transientTaskVisibilityIds.clear();
+  }
+  if (previousView === 'review' && previousView !== name) {
+    reviewTaskComposerState = null;
   }
   const prepare = $('#view-prepare');
   const review = $('#view-review');
@@ -4217,6 +4317,7 @@ const stickyDoneTaskAnchors = new Map();
 const collapsedTaskTrees = new Set();
 const transientTaskVisibilityIds = new Set();
 let taskComposerState = null;
+let reviewTaskComposerState = null;
 const deferredCompletedTaskIds = new Set();
 
 function triggerProjectCompletionCue(task) {
@@ -4517,7 +4618,8 @@ function findTaskCardElement(taskId, root = document) {
 }
 
 function revealTaskCard(taskId, opts = {}) {
-  const target = findTaskCardElement(taskId);
+  const root = opts.root || document;
+  const target = findTaskCardElement(taskId, root);
   if (!target) return false;
   const behavior = opts.behavior || 'smooth';
   const block = opts.block || 'center';
@@ -4583,6 +4685,29 @@ function rerenderTasksPaneKeepViewport(anchorTaskId = null) {
   requestAnimationFrame(() => {
     if (anchorTaskId && prevTop != null) {
       const nextAnchor = findTaskCardElement(anchorTaskId);
+      if (nextAnchor) {
+        const delta = nextAnchor.getBoundingClientRect().top - prevTop;
+        if (Math.abs(delta) > 1) window.scrollBy(0, delta);
+        return;
+      }
+    }
+    const maxY = Math.max(0, (document.documentElement?.scrollHeight || 0) - window.innerHeight);
+    const nextY = Math.max(0, Math.min(prevY, maxY));
+    if (Math.abs(window.scrollY - nextY) > 1) window.scrollTo(0, nextY);
+  });
+}
+
+function rerenderReviewStoryKeepViewport(anchorTaskId = null, revealTaskId = null) {
+  const storyRoot = $('#story-card');
+  const prevY = window.scrollY;
+  const anchor = anchorTaskId ? findTaskCardElement(anchorTaskId, storyRoot || document) : null;
+  const prevTop = anchor ? anchor.getBoundingClientRect().top : null;
+  renderStoryCard();
+  requestAnimationFrame(() => {
+    const nextRoot = $('#story-card') || document;
+    if (revealTaskId && revealTaskCard(revealTaskId, { block: 'nearest', root: nextRoot })) return;
+    if (anchorTaskId && prevTop != null) {
+      const nextAnchor = findTaskCardElement(anchorTaskId, nextRoot);
       if (nextAnchor) {
         const delta = nextAnchor.getBoundingClientRect().top - prevTop;
         if (Math.abs(delta) > 1) window.scrollBy(0, delta);
