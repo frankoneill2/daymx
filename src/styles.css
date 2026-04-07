@@ -1339,6 +1339,59 @@ button:focus-visible {
   gap: 6px;
 }
 
+.task-pin-preview-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.task-pin-preview {
+  display: block;
+  padding: 9px 10px;
+  border: 1px solid color-mix(in srgb, var(--border-soft) 84%, transparent);
+  border-radius: 11px;
+  background: linear-gradient(180deg, rgba(14, 27, 43, 0.78), rgba(11, 22, 35, 0.82));
+  color: inherit;
+  text-decoration: none;
+}
+
+.task-pin-preview.link:hover {
+  border-color: color-mix(in srgb, var(--accent) 46%, var(--border));
+  background: linear-gradient(180deg, rgba(16, 31, 49, 0.9), rgba(11, 24, 39, 0.9));
+}
+
+.task-pin-preview.note {
+  background: linear-gradient(180deg, rgba(22, 28, 44, 0.78), rgba(14, 21, 36, 0.82));
+}
+
+.task-pin-preview-kicker {
+  color: color-mix(in srgb, var(--accent) 52%, #e8f4ff 48%);
+  font-size: 11px;
+  font-weight: 800;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.task-pin-preview-title {
+  margin-top: 3px;
+  font-size: 13px;
+  font-weight: 800;
+  line-height: 1.35;
+}
+
+.task-pin-preview-copy {
+  margin-top: 3px;
+  color: var(--subtext);
+  font-size: 12px;
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+}
+
+.task-pin-more {
+  font-size: 12px;
+}
+
 .task-hidden-row {
   display: flex;
   flex-wrap: wrap;
@@ -2472,9 +2525,99 @@ button.task-meta-value:hover {
 .availability .row input[type='text'],
 .availability .row input[type='number'],
 .availability .row input[type='datetime-local'],
+.availability .row textarea,
 .availability .row select {
   width: 100%;
   min-width: 0;
+}
+
+.task-pin-stack,
+.task-pin-list,
+.task-pin-composer {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.task-pin-card {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px;
+  border: 1px solid color-mix(in srgb, var(--border-soft) 86%, transparent);
+  border-radius: 12px;
+  background: linear-gradient(180deg, rgba(14, 27, 43, 0.88), rgba(11, 21, 34, 0.88));
+}
+
+.task-pin-card.link {
+  background:
+    linear-gradient(180deg, rgba(16, 31, 49, 0.94), rgba(10, 22, 36, 0.9)),
+    linear-gradient(145deg, rgba(83, 194, 255, 0.08), transparent 52%);
+}
+
+.task-pin-card-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.task-pin-link-headline {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.task-pin-kicker {
+  color: color-mix(in srgb, var(--accent) 55%, #eff7ff 45%);
+  font-size: 11px;
+  font-weight: 800;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.task-pin-domain {
+  color: color-mix(in srgb, var(--accent-2) 56%, #eff7ff 44%);
+}
+
+.task-pin-link-title,
+.task-pin-note {
+  line-height: 1.45;
+}
+
+.task-pin-link-title {
+  font-weight: 800;
+  overflow-wrap: anywhere;
+}
+
+.task-pin-note,
+.task-pin-url {
+  color: var(--subtext);
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+}
+
+.task-pin-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 6px;
+}
+
+.task-pin-composer textarea {
+  min-height: 82px;
+  resize: vertical;
+}
+
+.task-pin-composer-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 6px;
+}
+
+.task-pin-empty {
+  padding: 2px 0;
 }
 
 .series-editor {
@@ -3083,6 +3226,17 @@ button.pill-btn.add {
 
   .task-compose-row input {
     width: 100%;
+  }
+
+  .task-pin-card-head,
+  .task-pin-actions {
+    align-items: stretch;
+  }
+
+  .task-pin-card-head,
+  .task-pin-composer-row {
+    display: grid;
+    grid-template-columns: 1fr;
   }
 
   .tasks-controls {

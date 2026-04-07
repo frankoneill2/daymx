@@ -71,6 +71,130 @@ function formatDuration(mins) {
   return `${h}h ${m}m`;
 }
 
+function compactText(value, maxLen = 140) {
+  const raw = String(value || '').replace(/\s+/g, ' ').trim();
+  if (!raw) return '';
+  if (raw.length <= maxLen) return raw;
+  return `${raw.slice(0, Math.max(0, maxLen - 3)).trimEnd()}...`;
+}
+
+function parseMarkdownLink(value) {
+  const raw = String(value || '').trim();
+  if (!raw) return null;
+  const match = raw.match(/^\[([^\]]+)\]\(([^)]+)\)$/);
+  if (!match) return null;
+  const title = String(match[1] || '').trim();
+  const url = String(match[2] || '').trim();
+  if (!title || !url) return null;
+  return { title, url };
+}
+
+function stripWwwHost(hostname) {
+  return String(hostname || '').replace(/^www\./i, '');
+}
+
+function humanizeLinkSlug(value) {
+  let text = String(value || '').trim();
+  if (!text) return '';
+  try {
+    text = decodeURIComponent(text);
+  } catch {}
+  text = text
+    .replace(/\.[a-z0-9]{1,6}$/i, '')
+    .replace(/[-_+]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+  if (!text) return '';
+  if (/^[a-z0-9 ]+$/i.test(text) && !/[A-Z]/.test(text)) {
+    text = text.replace(/\b([a-z])/g, (m) => m.toUpperCase());
+  }
+  return text;
+}
+
+function normalizePinnedUrl(value) {
+  const raw = String(value || '').trim().replace(/^<|>$/g, '');
+  if (!raw || /\s/.test(raw)) return null;
+  let candidate = raw;
+  if (!/^[a-z][a-z0-9+.-]*:\/\//i.test(candidate)) {
+    if (/^(localhost|(?:\d{1,3}\.){3}\d{1,3})(?::\d+)?(?:[/?#].*)?$/i.test(candidate)) {
+      candidate = `http://${candidate}`;
+    } else if (/^(?:www\.)?[a-z0-9-]+(?:\.[a-z0-9-]+)+(?::\d+)?(?:[/?#].*)?$/i.test(candidate)) {
+      candidate = `https://${candidate}`;
+    } else {
+      return null;
+    }
+  }
+  try {
+    const parsed = new URL(candidate);
+    if (!/^https?:$/i.test(parsed.protocol)) return null;
+    return parsed;
+  } catch {
+    return null;
+  }
+}
+
+function displayUrlForPin(url) {
+  if (!url) return '';
+  const host = stripWwwHost(url.hostname);
+  const path = String(url.pathname || '').replace(/\/+$/g, '');
+  const suffix = path && path !== '/' ? path : (url.search || '');
+  const combined = `${host}${suffix}`;
+  return compactText(combined, 68);
+}
+
+function createLinkPin(rawUrl, explicitTitle = '') {
+  const parsed = normalizePinnedUrl(rawUrl);
+  if (!parsed) return null;
+  const domain = stripWwwHost(parsed.hostname);
+  const segments = String(parsed.pathname || '').split('/').filter(Boolean);
+  const derivedTitle = humanizeLinkSlug(segments.length ? segments[segments.length - 1] : '');
+  const title = String(explicitTitle || '').trim() || derivedTitle || domain;
+  return {
+    id: uid('pin'),
+    type: 'link',
+    url: parsed.toString(),
+    title,
+    domain,
+    displayUrl: displayUrlForPin(parsed),
+  };
+}
+
+function normalizeTaskPin(pin) {
+  if (!pin || typeof pin !== 'object') return null;
+  const isLink = pin.type === 'link' || (!pin.type && pin.url);
+  const id = pin.id || uid('pin');
+  if (isLink) {
+    const normalized = createLinkPin(pin.url, pin.title);
+    if (!normalized) return null;
+    normalized.id = id;
+    return normalized;
+  }
+  const text = String(pin.text || '').trim();
+  if (!text) return null;
+  return { id, type: 'note', text };
+}
+
+function normalizeTaskPins(list) {
+  return (Array.isArray(list) ? list : [])
+    .map((entry) => normalizeTaskPin(entry))
+    .filter(Boolean);
+}
+
+function taskPins(task) {
+  return Array.isArray(task?.pins) ? task.pins : [];
+}
+
+function draftTaskPin(value, opts = {}) {
+  const raw = String(value || '').trim();
+  if (!raw) return null;
+  const explicitTitle = String(opts.title || '').trim();
+  const markdown = parseMarkdownLink(raw);
+  if (markdown) return createLinkPin(markdown.url, explicitTitle || markdown.title);
+  const link = createLinkPin(raw, explicitTitle);
+  if (link) return link;
+  return { id: uid('pin'), type: 'note', text: raw };
+}
+
 function normalizePriorityList(list) {
   const out = [];
   const seen = new Set();
@@ -749,6 +873,7 @@ function createTask(text = '') {
     duration: null,
     blocked: false,
     starred: false,
+    pins: [],
     children: [],
     childMode: 'parallel',
     series: [],
@@ -819,6 +944,7 @@ function normalizeTaskNode(task, opts = {}) {
   if (!('duration' in task)) task.duration = null;
   if (!('blocked' in task)) task.blocked = false;
   if (!('starred' in task)) task.starred = false;
+  if (!('pins' in task) || !Array.isArray(task.pins)) task.pins = [];
   if (!('childMode' in task) || !['parallel', 'sequential'].includes(task.childMode)) {
     task.childMode = opts.defaultChildMode || 'parallel';
   }
@@ -829,6 +955,7 @@ function normalizeTaskNode(task, opts = {}) {
   if (legacyLoc && (!task.locations || !task.locations.length)) task.locations = [legacyLoc];
   task.locations = uniqTags(task.locations);
   if (!task.loc && task.locations.length) task.loc = task.locations[0];
+  task.pins = normalizeTaskPins(task.pins);
 
   const legacySeries = Array.isArray(task.series) ? legacySeriesOrder(task.series) : [];
   if (legacySeries.length) {
@@ -1942,6 +2069,186 @@ function mutateTaskAndRefresh(taskId, updater, rerender, opts = {}) {
   return true;
 }
 
+function buildTaskPinPreviewList(task, opts = {}) {
+  const pins = taskPins(task);
+  if (!pins.length) return null;
+  const maxItems = Math.max(1, Number(opts.maxItems) || 2);
+  const wrap = el('div', { class: 'task-pin-preview-list' });
+  pins.slice(0, maxItems).forEach((pin) => {
+    if (pin.type === 'link') {
+      const linkCard = el('a', {
+        class: 'task-pin-preview link',
+        href: pin.url,
+        target: '_blank',
+        rel: 'noreferrer noopener',
+      });
+      linkCard.append(
+        el('div', { class: 'task-pin-preview-kicker' }, pin.domain || 'Link'),
+        el('div', { class: 'task-pin-preview-title' }, pin.title || pin.domain || 'Link'),
+        el('div', { class: 'task-pin-preview-copy' }, pin.displayUrl || pin.url)
+      );
+      wrap.append(linkCard);
+      return;
+    }
+    const noteCard = el('div', { class: 'task-pin-preview note' });
+    noteCard.append(
+      el('div', { class: 'task-pin-preview-kicker' }, 'Pinned note'),
+      el('div', { class: 'task-pin-preview-copy' }, compactText(pin.text, 180))
+    );
+    wrap.append(noteCard);
+  });
+  if (pins.length > maxItems) {
+    wrap.append(el('div', { class: 'task-pin-more subtext' }, `+${pins.length - maxItems} more pin${pins.length - maxItems === 1 ? '' : 's'}`));
+  }
+  return wrap;
+}
+
+function buildTaskPinsControls(taskId, rerender) {
+  const ref = findTaskRefById(taskId);
+  const task = ref?.task;
+  const stack = el('div', { class: 'task-pin-stack' });
+  if (!ref || !task) return stack;
+
+  const updateTask = (updater) => mutateTaskAndRefresh(taskId, updater, rerender);
+  const replacePin = (pinId, nextPin) => updateTask((target) => {
+    const nextPins = taskPins(target).map((entry) => (entry.id === pinId ? nextPin : entry));
+    target.pins = normalizeTaskPins(nextPins);
+  });
+  const removePin = (pinId) => updateTask((target) => {
+    target.pins = taskPins(target).filter((entry) => entry.id !== pinId);
+  });
+
+  const makeActionRow = (...buttons) => {
+    const actions = el('div', { class: 'task-pin-actions' });
+    actions.append(...buttons);
+    return actions;
+  };
+
+  const mountNoteDisplay = (card, pin) => {
+    const label = el('div', { class: 'task-pin-kicker' }, 'Pinned note');
+    const editBtn = el('button', { class: 'btn ghost btn-lite', type: 'button' }, 'Edit');
+    editBtn.addEventListener('click', () => mountNoteEditor(card, pin));
+    const removeBtn = el('button', { class: 'btn ghost danger btn-lite', type: 'button' }, 'Remove');
+    removeBtn.addEventListener('click', () => removePin(pin.id));
+    const head = el('div', { class: 'task-pin-card-head' });
+    head.append(label, makeActionRow(editBtn, removeBtn));
+    card.replaceChildren(head, el('div', { class: 'task-pin-note' }, pin.text || ''));
+  };
+
+  const mountNoteEditor = (card, pin) => {
+    const label = el('div', { class: 'task-pin-kicker' }, 'Edit note');
+    const textInput = el('textarea', { rows: '4', placeholder: 'Pinned note…' });
+    textInput.value = pin.text || '';
+    const saveBtn = el('button', { class: 'btn ghost btn-lite', type: 'button' }, 'Save');
+    saveBtn.addEventListener('click', () => {
+      const nextText = textInput.value.trim();
+      if (!nextText) {
+        showToast('Pinned note cannot be empty');
+        return;
+      }
+      replacePin(pin.id, { ...pin, text: nextText });
+    });
+    const cancelBtn = el('button', { class: 'btn ghost btn-lite', type: 'button' }, 'Cancel');
+    cancelBtn.addEventListener('click', () => mountNoteDisplay(card, pin));
+    const removeBtn = el('button', { class: 'btn ghost danger btn-lite', type: 'button' }, 'Remove');
+    removeBtn.addEventListener('click', () => removePin(pin.id));
+    card.replaceChildren(label, textInput, makeActionRow(saveBtn, cancelBtn, removeBtn));
+  };
+
+  const mountLinkDisplay = (card, pin) => {
+    const header = el('div', { class: 'task-pin-card-head' });
+    const identity = el('div', { class: 'task-pin-link-headline' });
+    identity.append(
+      el('div', { class: 'task-pin-kicker task-pin-domain' }, pin.domain || 'Link'),
+      el('div', { class: 'task-pin-link-title' }, pin.title || pin.domain || 'Link')
+    );
+    const openBtn = el('a', {
+      class: 'btn ghost btn-lite',
+      href: pin.url,
+      target: '_blank',
+      rel: 'noreferrer noopener',
+    }, 'Open');
+    const editBtn = el('button', { class: 'btn ghost btn-lite', type: 'button' }, 'Edit');
+    editBtn.addEventListener('click', () => mountLinkEditor(card, pin));
+    const removeBtn = el('button', { class: 'btn ghost danger btn-lite', type: 'button' }, 'Remove');
+    removeBtn.addEventListener('click', () => removePin(pin.id));
+    header.append(identity, makeActionRow(openBtn, editBtn, removeBtn));
+    card.replaceChildren(header, el('div', { class: 'task-pin-url' }, pin.displayUrl || pin.url));
+  };
+
+  const mountLinkEditor = (card, pin) => {
+    const titleInput = el('input', { type: 'text', placeholder: 'Link title (optional)' });
+    titleInput.value = pin.title || '';
+    const urlInput = el('input', { type: 'text', placeholder: 'https://example.com/page' });
+    urlInput.value = pin.url || '';
+    const saveBtn = el('button', { class: 'btn ghost btn-lite', type: 'button' }, 'Save');
+    saveBtn.addEventListener('click', () => {
+      const next = createLinkPin(urlInput.value, titleInput.value);
+      if (!next) {
+        showToast('Enter a valid link to pin');
+        return;
+      }
+      next.id = pin.id;
+      replacePin(pin.id, next);
+    });
+    const cancelBtn = el('button', { class: 'btn ghost btn-lite', type: 'button' }, 'Cancel');
+    cancelBtn.addEventListener('click', () => mountLinkDisplay(card, pin));
+    const removeBtn = el('button', { class: 'btn ghost danger btn-lite', type: 'button' }, 'Remove');
+    removeBtn.addEventListener('click', () => removePin(pin.id));
+    bindEnterToButton(titleInput, saveBtn);
+    bindEnterToButton(urlInput, saveBtn);
+    card.replaceChildren(
+      el('div', { class: 'task-pin-kicker' }, 'Edit link'),
+      titleInput,
+      urlInput,
+      makeActionRow(saveBtn, cancelBtn, removeBtn)
+    );
+  };
+
+  const pins = taskPins(task);
+  if (pins.length) {
+    const list = el('div', { class: 'task-pin-list' });
+    pins.forEach((pin) => {
+      const card = el('div', { class: `task-pin-card${pin.type === 'link' ? ' link' : ' note'}` });
+      if (pin.type === 'link') mountLinkDisplay(card, pin);
+      else mountNoteDisplay(card, pin);
+      list.append(card);
+    });
+    stack.append(list);
+  } else {
+    stack.append(el('div', { class: 'subtext task-pin-empty' }, 'No pinned notes or links yet.'));
+  }
+
+  const composer = el('div', { class: 'task-pin-composer' });
+  const bodyInput = el('textarea', { rows: '3', placeholder: 'Write a note or paste a link…' });
+  const titleInput = el('input', { type: 'text', placeholder: 'Link title (optional)' });
+  const addBtn = el('button', { class: 'btn ghost', type: 'button' }, 'Add pin');
+  addBtn.addEventListener('click', () => {
+    const next = draftTaskPin(bodyInput.value, { title: titleInput.value });
+    if (!next) return;
+    bodyInput.value = '';
+    titleInput.value = '';
+    updateTask((target) => {
+      target.pins = normalizeTaskPins(taskPins(target).concat([next]));
+    });
+  });
+  bodyInput.addEventListener('keydown', (e) => {
+    if (e.key !== 'Enter' || (!e.metaKey && !e.ctrlKey)) return;
+    e.preventDefault();
+    addBtn.click();
+  });
+  bindEnterToButton(titleInput, addBtn);
+  const composerRow = el('div', { class: 'task-pin-composer-row' });
+  composerRow.append(titleInput, addBtn);
+  composer.append(
+    bodyInput,
+    composerRow,
+    el('div', { class: 'subtext' }, 'Paste a URL or [label](url) for a link card. Everything else is saved as a note.')
+  );
+  stack.append(composer);
+  return stack;
+}
+
 function buildAvailabilityControls(nodeId, taskId, rerender) {
   const ref = findTaskRefById(taskId);
   const t = ref?.task;
@@ -1983,6 +2290,10 @@ function buildAvailabilityControls(nodeId, taskId, rerender) {
   }
   topRow.append(topControls);
   avail.append(topRow);
+
+  const rowPins = buildRow('Pinned');
+  rowPins.append(buildTaskPinsControls(taskId, rerender), el('div'));
+  avail.append(rowPins);
 
   const row1 = buildRow('Available from');
   const dt = el('input', { type: 'datetime-local' });
@@ -5603,6 +5914,9 @@ function renderTasksPaneV2() {
       (ref.ancestors || []).map((ancestor) => ancestor.text).join(' '),
       taskLocations(task).join(' '),
       (task.contexts || []).join(' '),
+      taskPins(task).map((pin) => (pin.type === 'link'
+        ? [pin.title, pin.domain, pin.displayUrl, pin.url].join(' ')
+        : pin.text)).join(' '),
     ].join(' ').toLowerCase();
     const okSearch = !textNeedle || hay.includes(textNeedle);
     const okAvailability = tasksViewState.showBlocked || meta.done || meta.available || !!focusTaskId;
@@ -5904,11 +6218,15 @@ function renderTasksPaneV2() {
       badgeRow.append(el('span', { class: 'pill task-state-chip tag' }, taskChildMode(task) === 'sequential' ? 'Sequential' : 'Parallel'));
     }
     if (task.starred) badgeRow.append(el('span', { class: 'pill task-state-chip warn' }, 'Starred'));
+    if (taskPins(task).length) badgeRow.append(el('span', { class: 'pill task-state-chip tag' }, `${taskPins(task).length} pin${taskPins(task).length === 1 ? '' : 's'}`));
     item.append(badgeRow);
 
     if (!tasksViewState.compactMode && !opts.flat) {
       item.append(buildTaskMetaRow(task, { variant: 'compact', includePriority: false }));
     }
+
+    const pinPreview = buildTaskPinPreviewList(task, { maxItems: tasksViewState.compactMode ? 1 : 2 });
+    if (pinPreview) item.append(pinPreview);
 
     if (!opts.flat) {
       const actionRow = el('div', { class: 'task-tree-action-row' });
@@ -6380,6 +6698,9 @@ if (typeof module !== 'undefined' && module.exports) {
       normalizeDurationValue,
       formatDuration,
       normalizePriorityList,
+      draftTaskPin,
+      normalizeTaskPins,
+      createLinkPin,
       dayKeyFromDate,
       followUpStatus,
       reviewStreakInfo,
