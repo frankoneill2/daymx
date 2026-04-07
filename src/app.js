@@ -6252,6 +6252,10 @@ function renderTasksPaneV2() {
   });
 
   const visibleRefs = allTaskRefs.filter((ref) => visibleById.get(ref.task.id));
+  const starredVisibleRefs = allTaskRefs.filter((ref) => {
+    const state = matchStateById.get(ref.task.id);
+    return state?.base && state?.okSearch && !ref.task.completed && !!ref.task.starred;
+  });
   selectedTaskKeys = new Set([...selectedTaskKeys].filter((id) => visibleById.get(id)));
   Array.from(deferredCompletedTaskIds).forEach((taskId) => {
     const ref = refById.get(taskId);
@@ -6269,7 +6273,7 @@ function renderTasksPaneV2() {
       return meta && !meta.done && !meta.available;
     }).length,
     done: visibleRefs.filter((ref) => metaById.get(ref.task.id)?.done).length,
-    starred: visibleRefs.filter((ref) => !ref.task.completed && ref.task.starred).length,
+    starred: starredVisibleRefs.length,
     urgent: visibleRefs.filter((ref) => {
       const due = metaById.get(ref.task.id)?.due;
       return !ref.task.completed && (due?.state === 'overdue' || due?.state === 'soon');
@@ -6984,7 +6988,7 @@ function renderTasksPaneV2() {
   const isDeferredDoneRoot = (ref) => !!ref?.task?.completed && deferredCompletedTaskIds.has(ref.task.id);
   const openRoots = topLevelRefs.filter((ref) => !ref.task.completed || isDeferredDoneRoot(ref));
   const doneRoots = topLevelRefs.filter((ref) => ref.task.completed && !isDeferredDoneRoot(ref));
-  const starredRefs = sortRefs(visibleRefs.filter((ref) => !ref.task.completed && ref.task.starred));
+  const starredRefs = sortRefs(starredVisibleRefs);
 
   if (starredRefs.length) appendSection('Starred', starredRefs, { extraClass: 'task-section-starred', cardOpts: { flat: true } });
   if (openRoots.length) appendSection((tasksViewState.showBlocked || openRoots.some((ref) => isDeferredDoneRoot(ref))) ? 'Open Tasks' : 'Ready Tasks', openRoots);
