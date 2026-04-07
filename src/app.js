@@ -1387,6 +1387,24 @@ function bindEnterToButton(input, btn) {
   });
 }
 
+function initTaskTextInput(input) {
+  if (!input || input.tagName !== 'TEXTAREA') return;
+  const syncHeight = () => {
+    input.style.height = 'auto';
+    input.style.height = `${Math.max(34, input.scrollHeight)}px`;
+  };
+  input.style.minHeight = '34px';
+  input.style.resize = 'none';
+  input.style.overflow = 'hidden';
+  input.addEventListener('input', syncHeight);
+  input.addEventListener('keydown', (e) => {
+    if (e.key !== 'Enter' || e.shiftKey) return;
+    e.preventDefault();
+    input.blur();
+  });
+  syncHeight();
+}
+
 function confirmName(promptText, initial = '') {
   const name = window.prompt(promptText, initial);
   if (!name) return null;
@@ -2312,7 +2330,8 @@ function renderNode(node, depMap = null) {
   node.tasks.forEach((t) => {
     const row = el('div', { class: 'inline-item task-inline-row', 'data-task-id': t.id });
     const top = el('div', { class: 'kv task-inline-top' });
-    const label = el('input', { type: 'text', class: 'task-title-input' });
+    const label = el('textarea', { class: 'task-title-input', rows: '1' });
+    initTaskTextInput(label);
     label.value = t.text;
     label.addEventListener('change', () => { t.text = label.value.trim() || t.text; store.saveNow(); });
     const actions = el('div', { class: 'meta task-inline-actions' });
@@ -2455,7 +2474,8 @@ function openTasksModal(nodeId) {
   const list = el('div', { class: 'inline-list' });
   node.tasks.forEach((t) => {
     const row = el('div', { class: 'inline-item' });
-    const text = el('input', { type: 'text' });
+    const text = el('textarea', { class: 'task-title-input', rows: '1' });
+    initTaskTextInput(text);
     text.value = t.text;
     text.addEventListener('input', () => { t.text = text.value; store.saveNow(); });
     const del = el('button', { class: 'btn ghost' }, 'Remove');
@@ -2799,7 +2819,8 @@ function renderStoryCard() {
       });
     }
     const main = el('div', { class: 'review-task-main' });
-    const titleInput = el('input', { type: 'text', class: 'task-title-input' });
+    const titleInput = el('textarea', { class: 'task-title-input', rows: '1' });
+    initTaskTextInput(titleInput);
     titleInput.value = t.text;
     titleInput.addEventListener('change', () => {
       const next = titleInput.value.trim();
@@ -4959,7 +4980,8 @@ function renderTasksPane() {
 
       const head = el('div', { class: 'series-flow-head' });
       const titleWrap = el('div', { class: 'series-flow-title-wrap' });
-      const title = el('input', { type: 'text', class: 'task-title-input series-flow-title' });
+      const title = el('textarea', { class: 'task-title-input series-flow-title', rows: '1' });
+      initTaskTextInput(title);
       title.value = t.text;
       title.addEventListener('change', () => {
         const v = title.value.trim();
@@ -5051,7 +5073,8 @@ function renderTasksPane() {
             store.saveNow();
             renderTasksPane();
           });
-          const text = el('input', { type: 'text', class: 'task-title-input series-next-text' });
+          const text = el('textarea', { class: 'task-title-input series-next-text', rows: '1' });
+          initTaskTextInput(text);
           text.value = s.text || '';
           text.addEventListener('change', () => {
             const v = text.value.trim();
@@ -5260,7 +5283,8 @@ function renderTasksPane() {
       const step = Math.max(1, Number(sub.rank) || 1);
       titleRow.append(el('span', { class: 'pill step' }, `Step ${step}`));
     }
-    const titleInput = el('input', { type: 'text', class: 'task-title-input' });
+    const titleInput = el('textarea', { class: 'task-title-input', rows: '1' });
+    initTaskTextInput(titleInput);
     titleInput.value = sub ? sub.text : t.text;
     titleInput.addEventListener('change', () => {
       const val = titleInput.value.trim();

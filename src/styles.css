@@ -1225,7 +1225,7 @@ button:focus-visible {
   line-height: 1.35;
 }
 
-input.task-title-input {
+.task-title-input {
   width: 100%;
   min-width: 0;
   border: 1px solid transparent;
@@ -1233,13 +1233,24 @@ input.task-title-input {
   background: transparent;
   color: inherit;
   padding: 4px 6px;
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
   line-height: 1.35;
 }
 
-input.task-title-input:focus-visible {
+.task-title-input:focus-visible {
   border-color: color-mix(in srgb, var(--accent) 55%, var(--border));
   background: rgba(83, 194, 255, 0.08);
   box-shadow: 0 0 0 3px rgba(83, 194, 255, 0.15);
+}
+
+.task-title-input.series-flow-title,
+.task-title-input.series-next-text {
+  resize: none;
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+  overflow: hidden;
+  min-height: 32px;
 }
 
 .node-title input.task-title-input {
