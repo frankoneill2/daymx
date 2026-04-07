@@ -20,7 +20,7 @@ const defaultData = () => ({
   threads: [], // array of nodes
   pantry: { categories: [] },
   gamification: { daily: {} },
-  dailyReview: { dayKey: '', active: false, idx: 0, currentId: null, completedDays: {} },
+  dailyReview: { dayKey: '', active: false, idx: 0, currentId: null, completedDays: {}, questionProgress: {} },
 });
 
 const LOCATION_PRESETS = ['mobile', 'laptop', 'home', 'work'];
@@ -500,6 +500,23 @@ function normalizeReviewCompletions(raw) {
   return out;
 }
 
+function normalizeReviewQuestionProgress(raw) {
+  const out = {};
+  Object.entries(raw || {}).forEach(([nodeId, questions]) => {
+    if (!nodeId || !questions || typeof questions !== 'object') return;
+    const questionEntries = {};
+    Object.entries(questions).forEach(([questionId, value]) => {
+      if (!questionId || !value || typeof value !== 'object') return;
+      questionEntries[questionId] = {
+        checked: !!value.checked,
+        readyAt: typeof value.readyAt === 'string' ? value.readyAt : null,
+      };
+    });
+    if (Object.keys(questionEntries).length) out[nodeId] = questionEntries;
+  });
+  return out;
+}
+
 function previousDayKey(dayKey) {
   const d = parseDayKey(dayKey);
   if (!d) return null;
@@ -540,11 +557,20 @@ function ensureDailyReviewInData(data, now = new Date()) {
     state.completedDays = {};
     changed = true;
   }
+  const normalizedQuestionProgress = normalizeReviewQuestionProgress(state.questionProgress);
+  if (JSON.stringify(normalizedQuestionProgress) !== JSON.stringify(state.questionProgress || {})) {
+    state.questionProgress = normalizedQuestionProgress;
+    changed = true;
+  } else if (!state.questionProgress || typeof state.questionProgress !== 'object') {
+    state.questionProgress = {};
+    changed = true;
+  }
   if (state.dayKey !== today) {
     state.dayKey = today;
     state.active = false;
     state.idx = 0;
     state.currentId = null;
+    state.questionProgress = {};
     changed = true;
     reset = true;
   }
@@ -578,6 +604,68 @@ function markDailyReviewCompleted(data, now = new Date()) {
   const already = !!state.completedDays[key];
   state.completedDays[key] = true;
   return { changed: !already, state };
+}
+
+function getDailyReviewQuestionProgress(nodeId, questionId, opts = {}) {
+  const { state } = ensureDailyReviewInData(store.data);
+  if (!state) return null;
+  if (!state.questionProgress || typeof state.questionProgress !== 'object') state.questionProgress = {};
+  let nodeEntry = state.questionProgress[nodeId];
+  if (!nodeEntry || typeof nodeEntry !== 'object') {
+    if (!opts.create) return null;
+    nodeEntry = {};
+    state.questionProgress[nodeId] = nodeEntry;
+  }
+  let questionEntry = nodeEntry[questionId];
+  if (!questionEntry || typeof questionEntry !== 'object') {
+    if (!opts.create) return null;
+    questionEntry = { checked: false, readyAt: null };
+    nodeEntry[questionId] = questionEntry;
+  }
+  questionEntry.checked = !!questionEntry.checked;
+  if (questionEntry.readyAt != null && typeof questionEntry.readyAt !== 'string') questionEntry.readyAt = null;
+  return questionEntry;
+}
+
+function formatCountdownSeconds(totalSeconds) {
+  const seconds = Math.max(0, Math.ceil(Number(totalSeconds) || 0));
+  if (seconds < 60) return `${seconds}s`;
+  const mins = Math.floor(seconds / 60);
+  const rem = seconds % 60;
+  return `${mins}:${String(rem).padStart(2, '0')}`;
+}
+
+function reviewQuestionRemainingSeconds(question, progress, now = new Date()) {
+  const timerSeconds = normalizeQuestionTimerSeconds(question?.timerSeconds);
+  if (!timerSeconds) return 0;
+  const readyAt = parseIsoDate(progress?.readyAt);
+  if (!readyAt) return timerSeconds;
+  return Math.max(0, Math.ceil((readyAt.getTime() - now.getTime()) / 1000));
+}
+
+function canCheckReviewQuestion(question, progress, now = new Date()) {
+  const timerSeconds = normalizeQuestionTimerSeconds(question?.timerSeconds);
+  if (!timerSeconds) return true;
+  const readyAt = parseIsoDate(progress?.readyAt);
+  return !!readyAt && readyAt.getTime() <= now.getTime();
+}
+
+function setDailyReviewQuestionChecked(nodeId, questionId, checked) {
+  const progress = getDailyReviewQuestionProgress(nodeId, questionId, { create: true });
+  if (!progress) return;
+  progress.checked = !!checked;
+  persistSharedStateWithoutHistory();
+}
+
+function startDailyReviewQuestionTimer(nodeId, question, now = new Date()) {
+  const timerSeconds = normalizeQuestionTimerSeconds(question?.timerSeconds);
+  if (!timerSeconds || !question?.id) return null;
+  const progress = getDailyReviewQuestionProgress(nodeId, question.id, { create: true });
+  if (!progress) return null;
+  progress.checked = false;
+  progress.readyAt = new Date(now.getTime() + (timerSeconds * 1000)).toISOString();
+  persistSharedStateWithoutHistory();
+  return progress;
 }
 
 function persistSharedStateWithoutHistory() {
@@ -852,8 +940,21 @@ function createNode(name = 'Untitled') {
   return { id: uid('node'), name, enabled: true, collapsed: false, children: [], questions: [], tasks: [] };
 }
 
+function normalizeQuestionTimerSeconds(value) {
+  const n = Math.round(Number(value) || 0);
+  if (!Number.isFinite(n) || n <= 0) return 0;
+  return n;
+}
+
 function createQuestion(text = '') {
-  return { id: uid('q'), text };
+  return { id: uid('q'), text, timerSeconds: 0 };
+}
+
+function normalizeQuestion(question) {
+  if (!question || typeof question !== 'object') return;
+  if (!question.id) question.id = uid('q');
+  question.text = String(question.text || '');
+  question.timerSeconds = normalizeQuestionTimerSeconds(question.timerSeconds);
 }
 
 function createTask(text = '') {
@@ -1354,6 +1455,7 @@ function normalizeNode(n) {
   n.name = n.name || 'Untitled';
   if (typeof n.enabled !== 'boolean') n.enabled = true;
   if (typeof n.collapsed !== 'boolean') n.collapsed = false;
+  n.questions.forEach((q) => normalizeQuestion(q));
   n.tasks.forEach((t) => normalizeTaskNode(t));
   n.children.forEach(normalizeNode);
 }
@@ -1753,6 +1855,29 @@ function createInlineIconAction(title, onClick, symbol = '✕', cls = '') {
   }, symbol);
   btn.addEventListener('click', onClick);
   return btn;
+}
+
+function buildQuestionTimerInput(question, onChange) {
+  const input = el('input', {
+    type: 'number',
+    min: '0',
+    step: '1',
+    class: 'select-sm question-timer-input',
+    title: 'Reflection timer in seconds',
+    'aria-label': 'Reflection timer in seconds',
+    placeholder: '0s',
+  });
+  const sync = () => {
+    const seconds = normalizeQuestionTimerSeconds(question?.timerSeconds);
+    input.value = seconds ? String(seconds) : '';
+  };
+  sync();
+  input.addEventListener('change', () => {
+    question.timerSeconds = normalizeQuestionTimerSeconds(input.value);
+    sync();
+    if (typeof onChange === 'function') onChange(question.timerSeconds);
+  });
+  return input;
 }
 
 function taskStatusMeta(task, opts = {}) {
@@ -2711,11 +2836,12 @@ function renderNode(node, depMap = null) {
     label.value = q.text;
     label.addEventListener('change', () => { q.text = label.value.trim() || q.text; store.saveNow(); });
     const actions = el('div', { class: 'row-actions' });
+    const timerInput = buildQuestionTimerInput(q, () => { store.saveNow(); renderThreads(); });
     const del = createInlineIconAction('Remove question', () => {
       node.questions = node.questions.filter(x => x.id !== q.id);
       store.saveNow(); renderThreads();
     }, '✕', 'danger');
-    actions.append(del);
+    actions.append(timerInput, del);
     top.append(label, actions);
     row.append(top);
     qList.append(row);
@@ -2848,17 +2974,22 @@ function openQuestionsModal(nodeId) {
 
   const list = el('div', { class: 'inline-list' });
   node.questions.forEach((q) => {
-    const row = el('div', { class: 'inline-item' });
+    const row = el('div', { class: 'inline-item question-inline-row' });
+    const top = el('div', { class: 'kv' });
     const ta = el('textarea', { value: q.text });
     ta.value = q.text;
     ta.addEventListener('input', () => { q.text = ta.value; store.saveNow(); });
+    const actions = el('div', { class: 'row-actions' });
+    const timerInput = buildQuestionTimerInput(q, () => { store.saveNow(); });
     const del = el('button', { class: 'btn ghost' }, 'Remove');
     del.addEventListener('click', () => {
       node.questions = node.questions.filter(x => x.id !== q.id);
       store.saveNow();
       openQuestionsModal(nodeId);
     });
-    row.append(ta, del);
+    actions.append(timerInput, del);
+    top.append(ta, actions);
+    row.append(top);
     list.append(row);
   });
 
@@ -2921,6 +3052,12 @@ let reviewState = {
   ids: [],
   idx: 0,
 };
+const reviewQuestionCountdownIntervals = new Set();
+
+function clearReviewQuestionCountdowns() {
+  reviewQuestionCountdownIntervals.forEach((id) => window.clearInterval(id));
+  reviewQuestionCountdownIntervals.clear();
+}
 
 function hasActiveReviewProgress() {
   const { state } = ensureDailyReviewInData(store.data);
@@ -3014,6 +3151,7 @@ function saveReviewProgress() {
 }
 
 function clearReviewProgress() {
+  clearReviewQuestionCountdowns();
   const ensured = ensureDailyReviewInData(store.data);
   if (ensured.state) {
     ensured.state.active = false;
@@ -3120,6 +3258,7 @@ function renderProgress() {
 function renderStoryCard() {
   const token = startViewportPreservation(!!$('#view-review') && !$('#view-review').hidden, $('#view-review'));
   try {
+    clearReviewQuestionCountdowns();
     const n = findNodeById(store.data.threads, reviewState.ids[reviewState.idx]);
     const card = $('#story-card');
     card.innerHTML = '';
@@ -3159,9 +3298,9 @@ function renderStoryCard() {
   qSection.append(el('div', { class: 'subtext section-kicker' }, sameScope ? 'Questions' : `${rootName} — Questions`));
   if (!n.questions.length) qSection.append(el('div', { class: 'empty' }, 'No questions yet.'));
   for (const q of n.questions) {
-    const wrap = el('div', { class: 'inline-item question-inline-row' });
-    // Top row: label + actions
-    const top = el('div', { class: 'kv' });
+    const wrap = el('div', { class: 'inline-item question-inline-row review-question-row' });
+    const main = el('div', { class: 'review-question-main' });
+    const check = el('input', { type: 'checkbox', class: 'review-question-check' });
     const label = el('input', { type: 'text', class: 'task-title-input' });
     label.value = q.text;
     label.addEventListener('change', () => {
@@ -3170,7 +3309,16 @@ function renderStoryCard() {
       if (qi >= 0) live.questions[qi].text = label.value.trim() || live.questions[qi].text;
       store.saveNow();
     });
-    const actions = el('div', { class: 'row-actions' });
+    main.append(check, label);
+
+    const tools = el('div', { class: 'review-question-tools' });
+    const timerLabel = el('span', { class: 'subtext review-question-timer-label' }, 'Reflect');
+    const timerInput = buildQuestionTimerInput(q, () => {
+      store.saveNow();
+      rerenderReviewStoryKeepViewport();
+    });
+    const timerBtn = el('button', { class: 'btn ghost btn-lite', type: 'button' }, 'Start');
+    const timerStatus = el('span', { class: 'subtext review-question-timer-status' });
     const delBtn = createInlineIconAction('Remove question', () => {
       const live = findNodeById(store.data.threads, n.id);
       live.questions = live.questions.filter(x => x.id !== q.id);
@@ -3178,9 +3326,69 @@ function renderStoryCard() {
       renderProgress();
       rerenderReviewStoryKeepViewport();
     }, '✕', 'danger');
-    actions.append(delBtn);
-    top.append(label, actions);
-    wrap.append(top);
+    tools.append(timerLabel, timerInput, timerBtn, timerStatus, delBtn);
+    wrap.append(main, tools);
+
+    const syncQuestionUi = () => {
+      const progress = getDailyReviewQuestionProgress(n.id, q.id) || { checked: false, readyAt: null };
+      const timerSeconds = normalizeQuestionTimerSeconds(q.timerSeconds);
+      const remaining = reviewQuestionRemainingSeconds(q, progress);
+      const ready = canCheckReviewQuestion(q, progress);
+      const locked = !!timerSeconds && !progress.checked && !ready;
+      check.checked = !!progress.checked;
+      check.disabled = locked;
+      wrap.classList.toggle('checked', !!progress.checked);
+      wrap.classList.toggle('locked', locked);
+      timerLabel.hidden = !timerSeconds;
+      timerInput.hidden = false;
+      timerBtn.hidden = !timerSeconds || !!progress.checked;
+      timerStatus.hidden = !timerSeconds;
+      if (!timerSeconds) {
+        timerStatus.textContent = '';
+        return;
+      }
+      if (progress.checked) {
+        timerStatus.textContent = 'Checked for today';
+        return;
+      }
+      if (!progress.readyAt) {
+        timerBtn.disabled = false;
+        timerBtn.textContent = `Start ${formatCountdownSeconds(timerSeconds)}`;
+        timerStatus.textContent = `Hold for ${formatCountdownSeconds(timerSeconds)} before checking`;
+        return;
+      }
+      if (remaining > 0) {
+        timerBtn.disabled = true;
+        timerBtn.textContent = 'Running';
+        timerStatus.textContent = `${formatCountdownSeconds(remaining)} remaining`;
+        return;
+      }
+      timerBtn.disabled = false;
+      timerBtn.textContent = `Restart ${formatCountdownSeconds(timerSeconds)}`;
+      timerStatus.textContent = 'Ready to check';
+    };
+
+    check.addEventListener('change', () => {
+      setDailyReviewQuestionChecked(n.id, q.id, check.checked);
+      syncQuestionUi();
+    });
+    timerBtn.addEventListener('click', () => {
+      startDailyReviewQuestionTimer(n.id, q);
+      syncQuestionUi();
+    });
+    syncQuestionUi();
+    const initialProgress = getDailyReviewQuestionProgress(n.id, q.id) || { checked: false, readyAt: null };
+    if (normalizeQuestionTimerSeconds(q.timerSeconds) && reviewQuestionRemainingSeconds(q, initialProgress) > 0) {
+      const intervalId = window.setInterval(() => {
+        const progress = getDailyReviewQuestionProgress(n.id, q.id) || { checked: false, readyAt: null };
+        syncQuestionUi();
+        if (reviewQuestionRemainingSeconds(q, progress) <= 0 || progress.checked) {
+          window.clearInterval(intervalId);
+          reviewQuestionCountdownIntervals.delete(intervalId);
+        }
+      }, 250);
+      reviewQuestionCountdownIntervals.add(intervalId);
+    }
     qSection.append(wrap);
   }
   // Quick add question in review
@@ -3869,6 +4077,7 @@ function switchView(name) {
   tReview.classList.toggle('active', isReview);
   tTasks.classList.toggle('active', isTasks);
   tPantry.classList.toggle('active', isPantry);
+  if (!isReview) clearReviewQuestionCountdowns();
   if (!isTasks) clearTasksStickyVisibilitySync();
   if (isReview) onReviewVisibility();
   if (isTasks) renderTasksPane();
@@ -3878,6 +4087,7 @@ function switchView(name) {
 }
 
 function onReviewVisibility() {
+  clearReviewQuestionCountdowns();
   const summary = $('#review-summary');
   if (summary) summary.hidden = true;
   const ensured = ensureDailyReviewInData(store.data);

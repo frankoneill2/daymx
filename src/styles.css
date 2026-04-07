@@ -616,6 +616,11 @@ button:focus-visible {
   gap: 6px;
 }
 
+.question-timer-input {
+  width: 76px;
+  min-width: 76px;
+}
+
 .row-action {
   width: 30px;
   height: 30px;
@@ -991,6 +996,48 @@ button:focus-visible {
   display: flex;
   flex-direction: column;
   gap: 8px;
+}
+
+.review-question-row {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.review-question-row.locked {
+  border-color: color-mix(in srgb, var(--warn) 42%, var(--border-soft));
+  background: linear-gradient(180deg, rgba(20, 18, 14, 0.86), rgba(14, 16, 22, 0.9));
+}
+
+.review-question-row.checked {
+  border-color: color-mix(in srgb, var(--accent-2) 44%, var(--border-soft));
+}
+
+.review-question-main {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 10px;
+  align-items: start;
+}
+
+.review-question-check {
+  margin-top: 8px;
+}
+
+.review-question-tools {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  padding-left: 28px;
+}
+
+.review-question-timer-label {
+  font-weight: 700;
+}
+
+.review-question-timer-status {
+  min-height: 18px;
 }
 
 .story-controls {
@@ -3231,6 +3278,10 @@ button.pill-btn.add {
   .task-panel-inline-row {
     width: 100%;
     justify-content: flex-start;
+  }
+
+  .review-question-tools {
+    padding-left: 0;
   }
 
   .task-tree-children {
