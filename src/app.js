@@ -429,6 +429,11 @@ const openPausePanels = {
   review: new Set(),
   tasks: new Set(),
 };
+const openPredictionPanels = {
+  prepare: new Set(),
+  review: new Set(),
+  tasks: new Set(),
+};
 
 function isTagPanelOpen(view, taskId) {
   const set = openTagPanels[view];
@@ -451,6 +456,19 @@ function isPausePanelOpen(view, taskId) {
 
 function setPausePanelOpen(view, taskId, open) {
   const set = openPausePanels[view];
+  if (!set || !taskId) return;
+  if (open) set.add(taskId);
+  else set.delete(taskId);
+}
+
+function isPredictionPanelOpen(view, taskId) {
+  const set = openPredictionPanels[view];
+  if (!set || !taskId) return false;
+  return set.has(taskId);
+}
+
+function setPredictionPanelOpen(view, taskId, open) {
+  const set = openPredictionPanels[view];
   if (!set || !taskId) return;
   if (open) set.add(taskId);
   else set.delete(taskId);
@@ -957,6 +975,253 @@ function normalizeQuestion(question) {
   question.timerSeconds = normalizeQuestionTimerSeconds(question.timerSeconds);
 }
 
+function clampPredictionProbability(value, fallback = 50) {
+  const n = Math.round(Number(value));
+  if (!Number.isFinite(n)) return fallback;
+  return Math.max(0, Math.min(100, n));
+}
+
+function normalizePredictionOutcome(value, fallback = 'open') {
+  return ['open', 'success', 'failure', 'superseded'].includes(value) ? value : fallback;
+}
+
+function normalizeTaskPredictionRecord(record, opts = {}) {
+  if (!record || typeof record !== 'object') return null;
+  const normalized = {
+    id: record.id || uid('pred'),
+    probability: clampPredictionProbability(record.probability, 50),
+    madeAt: record.madeAt || nowIso(),
+    resolveBy: record.resolveBy || null,
+    outcome: normalizePredictionOutcome(record.outcome, opts.active ? 'open' : 'failure'),
+    resolvedAt: record.resolvedAt || null,
+    madeInNodeId: record.madeInNodeId || null,
+    madeInNodePath: record.madeInNodePath || '',
+    madeInRootId: record.madeInRootId || null,
+    madeInRootName: record.madeInRootName || '',
+    taskTextSnapshot: record.taskTextSnapshot || '',
+  };
+  if (opts.active) {
+    normalized.outcome = 'open';
+    normalized.resolvedAt = null;
+  }
+  return normalized;
+}
+
+function normalizeTaskPredictionHistory(list) {
+  return (Array.isArray(list) ? list : [])
+    .map((entry) => normalizeTaskPredictionRecord(entry))
+    .filter((entry) => entry && entry.outcome !== 'open');
+}
+
+function taskPredictionHistory(task) {
+  return Array.isArray(task?.predictionHistory) ? task.predictionHistory : [];
+}
+
+function activeTaskPrediction(task) {
+  return task?.prediction ? normalizeTaskPredictionRecord(task.prediction, { active: true }) : null;
+}
+
+function predictionThreadMetaForRef(ref) {
+  const node = ref?.node || null;
+  const root = ref?.root || rootOf(node);
+  return {
+    madeInNodeId: node?.id || null,
+    madeInNodePath: node ? nodePath(node) : '',
+    madeInRootId: root?.id || node?.id || null,
+    madeInRootName: (root?.name || node?.name || '').trim(),
+  };
+}
+
+function archiveTaskPrediction(task, prediction) {
+  if (!task || !prediction) return null;
+  const next = normalizeTaskPredictionRecord(prediction);
+  if (!next || next.outcome === 'open') return null;
+  task.predictionHistory = normalizeTaskPredictionHistory(taskPredictionHistory(task).concat([next]));
+  return next;
+}
+
+function supersedeTaskPrediction(task, now = new Date()) {
+  const active = activeTaskPrediction(task);
+  if (!task || !active) return null;
+  const archived = {
+    ...active,
+    outcome: 'superseded',
+    resolvedAt: now.toISOString(),
+    taskTextSnapshot: active.taskTextSnapshot || task.text || '',
+  };
+  archiveTaskPrediction(task, archived);
+  task.prediction = null;
+  return archived;
+}
+
+function resolveTaskPrediction(task, outcome, now = new Date(), resolvedAt = null) {
+  const active = activeTaskPrediction(task);
+  if (!task || !active) return null;
+  const finalOutcome = outcome === 'success' ? 'success' : 'failure';
+  const archived = {
+    ...active,
+    outcome: finalOutcome,
+    resolvedAt: (resolvedAt || now).toISOString(),
+    taskTextSnapshot: active.taskTextSnapshot || task.text || '',
+  };
+  archiveTaskPrediction(task, archived);
+  task.prediction = null;
+  return archived;
+}
+
+function maybeResolveTaskPrediction(task, now = new Date()) {
+  const active = activeTaskPrediction(task);
+  if (!task || !active) return false;
+  const deadline = parseIsoDate(active.resolveBy);
+  if (!deadline) return false;
+  const completedAt = parseIsoDate(task.completedAt);
+  if (completedAt && completedAt.getTime() <= deadline.getTime()) {
+    resolveTaskPrediction(task, 'success', now, completedAt);
+    return true;
+  }
+  if (now.getTime() >= deadline.getTime()) {
+    resolveTaskPrediction(task, 'failure', now);
+    return true;
+  }
+  return false;
+}
+
+function settleTaskPredictions(now = new Date()) {
+  let changed = false;
+  flattenTaskRefs().forEach(({ task }) => {
+    if (maybeResolveTaskPrediction(task, now)) changed = true;
+  });
+  return changed;
+}
+
+function createTaskPrediction(ref, probability, resolveBy, now = new Date()) {
+  const task = ref?.task;
+  if (!task) return null;
+  const meta = predictionThreadMetaForRef(ref);
+  return normalizeTaskPredictionRecord({
+    id: uid('pred'),
+    probability,
+    madeAt: now.toISOString(),
+    resolveBy,
+    outcome: 'open',
+    resolvedAt: null,
+    taskTextSnapshot: task.text || '',
+    ...meta,
+  }, { active: true });
+}
+
+function predictionBucketLabel(probability) {
+  const p = clampPredictionProbability(probability, 50);
+  if (p === 100) return '100%';
+  const start = Math.floor(p / 10) * 10;
+  const end = start === 90 ? 99 : (start + 9);
+  return `${start}-${end}%`;
+}
+
+function formatPredictionDeadline(value) {
+  const date = parseIsoDate(value);
+  if (!date) return 'No deadline';
+  return date.toLocaleString([], {
+    month: 'short',
+    day: 'numeric',
+    hour: 'numeric',
+    minute: '2-digit',
+  });
+}
+
+function predictionRelativeLabel(value, now = new Date()) {
+  const date = parseIsoDate(value);
+  if (!date) return '';
+  const diffMs = date.getTime() - now.getTime();
+  const absMinutes = Math.max(1, Math.round(Math.abs(diffMs) / 60000));
+  if (absMinutes < 60) return diffMs >= 0 ? `due in ${absMinutes}m` : `${absMinutes}m late`;
+  const absHours = Math.round(absMinutes / 60);
+  if (absHours < 48) return diffMs >= 0 ? `due in ${absHours}h` : `${absHours}h late`;
+  const absDays = Math.round(absHours / 24);
+  return diffMs >= 0 ? `due in ${absDays}d` : `${absDays}d late`;
+}
+
+function collectTaskPredictionEntries(refs = []) {
+  const active = [];
+  const history = [];
+  refs.forEach((ref) => {
+    const task = ref?.task;
+    if (!task) return;
+    const currentPath = taskRefPath(ref);
+    const currentThreadName = (ref.root?.name || ref.node?.name || '').trim();
+    const currentThreadId = ref.root?.id || ref.node?.id || null;
+    const activePrediction = activeTaskPrediction(task);
+    if (activePrediction) {
+      active.push({
+        ...activePrediction,
+        taskId: task.id,
+        taskText: task.text || activePrediction.taskTextSnapshot || 'Untitled task',
+        currentPath,
+        currentThreadId,
+        currentThreadName,
+      });
+    }
+    taskPredictionHistory(task).forEach((entry) => {
+      history.push({
+        ...entry,
+        taskId: task.id,
+        taskText: entry.taskTextSnapshot || task.text || 'Untitled task',
+        currentPath,
+        currentThreadId,
+        currentThreadName,
+      });
+    });
+  });
+  return { active, history };
+}
+
+function filterPredictionEntriesByThread(entries = [], threadId = null) {
+  if (!threadId) return entries.slice();
+  return entries.filter((entry) => entry.madeInRootId === threadId);
+}
+
+function predictionBrierScore(entries = []) {
+  const scored = entries.filter((entry) => entry.outcome === 'success' || entry.outcome === 'failure');
+  if (!scored.length) return null;
+  const total = scored.reduce((sum, entry) => {
+    const expected = clampPredictionProbability(entry.probability, 50) / 100;
+    const actual = entry.outcome === 'success' ? 1 : 0;
+    return sum + ((expected - actual) ** 2);
+  }, 0);
+  return total / scored.length;
+}
+
+function predictionCalibrationRows(entries = []) {
+  const buckets = new Map();
+  entries.forEach((entry) => {
+    if (entry.outcome !== 'success' && entry.outcome !== 'failure') return;
+    const probability = clampPredictionProbability(entry.probability, 50);
+    const start = probability === 100 ? 100 : Math.floor(probability / 10) * 10;
+    const key = String(start);
+    if (!buckets.has(key)) {
+      buckets.set(key, {
+        key,
+        label: predictionBucketLabel(probability),
+        start,
+        total: 0,
+        successes: 0,
+        expectedSum: 0,
+      });
+    }
+    const bucket = buckets.get(key);
+    bucket.total += 1;
+    bucket.expectedSum += probability;
+    if (entry.outcome === 'success') bucket.successes += 1;
+  });
+  return [...buckets.values()]
+    .sort((a, b) => a.start - b.start)
+    .map((bucket) => ({
+      ...bucket,
+      actualRate: bucket.total ? ((bucket.successes / bucket.total) * 100) : 0,
+      averageProbability: bucket.total ? (bucket.expectedSum / bucket.total) : 0,
+    }));
+}
+
 function createTask(text = '') {
   const ts = nowIso();
   return {
@@ -981,6 +1246,8 @@ function createTask(text = '') {
     duration: null,
     blocked: false,
     starred: false,
+    prediction: null,
+    predictionHistory: [],
     pins: [],
     children: [],
     childMode: 'parallel',
@@ -1052,6 +1319,8 @@ function normalizeTaskNode(task, opts = {}) {
   if (!('duration' in task)) task.duration = null;
   if (!('blocked' in task)) task.blocked = false;
   if (!('starred' in task)) task.starred = false;
+  if (!('prediction' in task)) task.prediction = null;
+  if (!('predictionHistory' in task) || !Array.isArray(task.predictionHistory)) task.predictionHistory = [];
   if (!('pins' in task) || !Array.isArray(task.pins)) task.pins = [];
   if (!('childMode' in task) || !['parallel', 'sequential'].includes(task.childMode)) {
     task.childMode = opts.defaultChildMode || 'parallel';
@@ -1064,6 +1333,8 @@ function normalizeTaskNode(task, opts = {}) {
   task.locations = uniqTags(task.locations);
   if (!task.loc && task.locations.length) task.loc = task.locations[0];
   task.pins = normalizeTaskPins(task.pins);
+  task.prediction = task.prediction ? normalizeTaskPredictionRecord(task.prediction, { active: true }) : null;
+  task.predictionHistory = normalizeTaskPredictionHistory(task.predictionHistory);
 
   const legacySeries = Array.isArray(task.series) ? legacySeriesOrder(task.series) : [];
   if (legacySeries.length) {
@@ -1545,6 +1816,7 @@ function setTaskCompleted(task, completed, now = new Date(), opts = {}) {
     const awarded = awardPoints(pointsForTaskCompletion(task), now);
     if (awarded > 0) task.completionPointsAwardedAt = now.toISOString();
   }
+  if (task.completed) maybeResolveTaskPrediction(task, now);
   if (opts.cascadeChildren && taskHasChildren(task)) {
     taskChildList(task).forEach((child) => {
       setTaskCompleted(child, completed, now, {
@@ -1590,6 +1862,7 @@ function setTaskTreeCompleted(task, completed, now = new Date(), opts = {}) {
 }
 
 function resetTaskForRecurring(task) {
+  supersedeTaskPrediction(task);
   task.completed = false;
   task.completedAt = null;
   task.archivedAt = null;
@@ -1915,6 +2188,157 @@ function buildTaskStateBadges(task, opts = {}) {
     row.append(el('span', { class: 'pill task-state-chip waiting' }, `Waiting on: ${waiting}`));
   }
   return row;
+}
+
+function buildTaskPredictionBanner(task, opts = {}) {
+  const prediction = activeTaskPrediction(task);
+  if (!prediction) return null;
+  const now = opts.now || new Date();
+  const banner = el('div', { class: 'task-prediction-banner' });
+  const head = el('div', { class: 'task-prediction-head' });
+  head.append(
+    el('span', { class: 'task-prediction-probability' }, `${prediction.probability}%`),
+    el('span', { class: 'task-prediction-deadline' }, `by ${formatPredictionDeadline(prediction.resolveBy)}`)
+  );
+  banner.append(head);
+  const metaParts = [];
+  const relative = predictionRelativeLabel(prediction.resolveBy, now);
+  if (relative) metaParts.push(relative);
+  if (prediction.madeInRootName) metaParts.push(`from ${prediction.madeInRootName}`);
+  if (metaParts.length) banner.append(el('div', { class: 'task-prediction-meta' }, metaParts.join(' • ')));
+  return banner;
+}
+
+function buildPredictionControls(taskId, rerender) {
+  const ref = findTaskRefById(taskId);
+  const task = ref?.task;
+  const panel = el('div', { class: 'availability task-prediction-panel' });
+  if (!ref || !task) return panel;
+
+  const buildRow = (label) => {
+    const row = el('div', { class: 'row' });
+    row.append(el('div', { class: 'subtext' }, label));
+    return row;
+  };
+  const updateTask = (updater) => mutateTaskAndRefresh(taskId, updater, rerender, { renderThreads: true });
+  const active = activeTaskPrediction(task);
+  const now = new Date();
+  const defaultDeadline = (() => {
+    const next = new Date(now);
+    next.setDate(next.getDate() + 1);
+    next.setHours(18, 0, 0, 0);
+    return next.toISOString();
+  })();
+
+  const summaryRow = buildRow('Current');
+  summaryRow.append(
+    active
+      ? el('div', { class: 'task-prediction-summary' }, `${active.probability}% by ${formatPredictionDeadline(active.resolveBy)}`)
+      : el('div', { class: 'subtext task-prediction-empty' }, 'No active prediction yet.'),
+    el('div')
+  );
+  panel.append(summaryRow);
+
+  const probabilityRow = buildRow('Probability');
+  const probabilityControls = el('div', { class: 'task-prediction-inputs' });
+  const probabilityRange = el('input', { type: 'range', min: '0', max: '100', step: '1' });
+  const probabilityInput = el('input', { type: 'number', min: '0', max: '100', step: '1', class: 'select-sm question-timer-input' });
+  const probabilityValue = el('span', { class: 'pill task-state-chip prediction' });
+  const syncProbability = (value) => {
+    const next = clampPredictionProbability(value, active?.probability ?? 70);
+    probabilityRange.value = String(next);
+    probabilityInput.value = String(next);
+    probabilityValue.textContent = `${next}%`;
+  };
+  syncProbability(active?.probability ?? 70);
+  probabilityRange.addEventListener('input', () => syncProbability(probabilityRange.value));
+  probabilityInput.addEventListener('change', () => syncProbability(probabilityInput.value));
+  probabilityControls.append(probabilityRange, probabilityInput, probabilityValue);
+  probabilityRow.append(probabilityControls, el('div'));
+  panel.append(probabilityRow);
+
+  const quickProbRow = buildRow('Quick odds');
+  const quickProbChips = el('div', { class: 'chiplist' });
+  [50, 70, 90].forEach((value) => {
+    const btn = el('button', { class: 'chip toggle', type: 'button' }, `${value}%`);
+    btn.addEventListener('click', () => syncProbability(value));
+    quickProbChips.append(btn);
+  });
+  quickProbRow.append(quickProbChips, el('div'));
+  panel.append(quickProbRow);
+
+  const deadlineRow = buildRow('Deadline');
+  const deadlineControls = el('div', { class: 'stack' });
+  const deadlineInput = el('input', { type: 'datetime-local' });
+  deadlineInput.value = toLocalInputValue(active?.resolveBy || defaultDeadline);
+  const quickDeadlineRow = el('div', { class: 'chiplist' });
+  const setDeadline = (date) => {
+    deadlineInput.value = toLocalInputValue(date.toISOString());
+  };
+  const tomorrow = new Date(now);
+  tomorrow.setDate(tomorrow.getDate() + 1);
+  tomorrow.setHours(18, 0, 0, 0);
+  const week = new Date(now);
+  week.setDate(week.getDate() + 7);
+  week.setHours(18, 0, 0, 0);
+  [
+    ['Tonight', (() => {
+      const d = new Date(now);
+      d.setHours(23, 0, 0, 0);
+      if (d <= now) d.setDate(d.getDate() + 1);
+      return d;
+    })()],
+    ['Tomorrow', tomorrow],
+    ['1 week', week],
+  ].forEach(([label, date]) => {
+    const btn = el('button', { class: 'chip toggle', type: 'button' }, label);
+    btn.addEventListener('click', () => setDeadline(date));
+    quickDeadlineRow.append(btn);
+  });
+  deadlineControls.append(deadlineInput, quickDeadlineRow);
+  deadlineRow.append(deadlineControls, el('div'));
+  panel.append(deadlineRow);
+
+  const actionsRow = buildRow('Actions');
+  const actions = el('div', { class: 'task-prediction-actions' });
+  const saveBtn = el('button', { class: 'btn ghost', type: 'button' }, active ? 'Update prediction' : 'Set prediction');
+  saveBtn.addEventListener('click', () => {
+    const resolveBy = parseLocalDateTime(deadlineInput.value);
+    if (!resolveBy) {
+      showToast('Choose a prediction deadline');
+      return;
+    }
+    const deadline = parseIsoDate(resolveBy);
+    if (!deadline || deadline.getTime() <= Date.now()) {
+      showToast('Prediction deadline must be in the future');
+      return;
+    }
+    const probability = clampPredictionProbability(probabilityInput.value, 70);
+    setPredictionPanelOpen('tasks', taskId, false);
+    setPredictionPanelOpen('review', taskId, false);
+    updateTask((liveTask, liveRef) => {
+      const existing = activeTaskPrediction(liveTask);
+      if (existing && existing.probability === probability && existing.resolveBy === resolveBy) return;
+      if (existing) supersedeTaskPrediction(liveTask);
+      liveTask.prediction = createTaskPrediction(liveRef || ref, probability, resolveBy);
+    });
+  });
+  actions.append(saveBtn);
+  if (active) {
+    const clearBtn = el('button', { class: 'btn ghost danger', type: 'button' }, 'Clear prediction');
+    clearBtn.addEventListener('click', () => {
+      setPredictionPanelOpen('tasks', taskId, false);
+      setPredictionPanelOpen('review', taskId, false);
+      updateTask((liveTask) => {
+        supersedeTaskPrediction(liveTask);
+      });
+    });
+    actions.append(clearBtn);
+  }
+  actionsRow.append(actions, el('div'));
+  panel.append(actionsRow);
+
+  return panel;
 }
 
 function buildTaskMetaRow(t, opts = {}) {
@@ -3259,6 +3683,7 @@ function renderStoryCard() {
   const token = startViewportPreservation(!!$('#view-review') && !$('#view-review').hidden, $('#view-review'));
   try {
     clearReviewQuestionCountdowns();
+    if (settleTaskPredictions(new Date())) store.saveNow();
     const n = findNodeById(store.data.threads, reviewState.ids[reviewState.idx]);
     const card = $('#story-card');
     card.innerHTML = '';
@@ -3685,6 +4110,21 @@ function buildReviewTaskCards(node, depMap, now = new Date()) {
         liveTask.starred = !liveTask.starred;
       }, { anchorTaskId: task.id });
     });
+    const predictionBtn = el('button', {
+      class: `task-icon-btn${activeTaskPrediction(task) ? ' active prediction' : ''}`,
+      type: 'button',
+      title: activeTaskPrediction(task) ? 'Edit prediction' : 'Set prediction',
+      'aria-label': activeTaskPrediction(task) ? 'Edit prediction' : 'Set prediction',
+    }, '◔');
+    predictionBtn.addEventListener('click', () => {
+      const next = !isPredictionPanelOpen('review', task.id);
+      setPredictionPanelOpen('review', task.id, next);
+      if (next) {
+        setPausePanelOpen('review', task.id, false);
+        setTagPanelOpen('review', task.id, false);
+      }
+      rerenderReviewStoryKeepViewport(task.id);
+    });
     const pauseBtn = el('button', {
       class: `task-icon-btn${taskHasPauseState(task, depMap) ? ' active pause' : ''}`,
       type: 'button',
@@ -3695,6 +4135,7 @@ function buildReviewTaskCards(node, depMap, now = new Date()) {
       const next = !isPausePanelOpen('review', task.id);
       setPausePanelOpen('review', task.id, next);
       if (next) setTagPanelOpen('review', task.id, false);
+      if (next) setPredictionPanelOpen('review', task.id, false);
       rerenderReviewStoryKeepViewport(task.id);
     });
     const detailBtn = el('button', {
@@ -3706,12 +4147,18 @@ function buildReviewTaskCards(node, depMap, now = new Date()) {
     detailBtn.addEventListener('click', () => {
       const next = !isTagPanelOpen('review', task.id);
       setTagPanelOpen('review', task.id, next);
-      if (next) setPausePanelOpen('review', task.id, false);
+      if (next) {
+        setPausePanelOpen('review', task.id, false);
+        setPredictionPanelOpen('review', task.id, false);
+      }
       rerenderReviewStoryKeepViewport(task.id);
     });
-    tools.append(starBtn, pauseBtn, detailBtn);
+    tools.append(starBtn, predictionBtn, pauseBtn, detailBtn);
     head.append(tools);
     item.append(head);
+
+    const predictionBanner = buildTaskPredictionBanner(task, { now });
+    if (predictionBanner) item.append(predictionBanner);
 
     const badgeRow = buildTaskStateBadges(task, { now, depMap, done: meta?.done, ref });
     if (taskHasChildren(task)) {
@@ -3750,6 +4197,9 @@ function buildReviewTaskCards(node, depMap, now = new Date()) {
 
     if (isPausePanelOpen('review', task.id)) {
       item.append(buildPauseControls(task.id, () => rerenderReviewStoryKeepViewport(task.id)));
+    }
+    if (isPredictionPanelOpen('review', task.id)) {
+      item.append(buildPredictionControls(task.id, () => rerenderReviewStoryKeepViewport(task.id)));
     }
     if (isTagPanelOpen('review', task.id)) {
       item.append(buildAvailabilityControls(ref.node.id, task.id, () => rerenderReviewStoryKeepViewport(task.id)));
@@ -4526,6 +4976,7 @@ function wireCopyShopping(){
 }
 let tasksViewState = {
   threadNodeId: null,
+  predictionThreadId: null,
   currentContext: 'Any',
   locationTags: [],
   durationMax: null,
@@ -4570,6 +5021,7 @@ function triggerProjectCompletionCue(task) {
 function saveTasksViewState() {
   const payload = {
     threadNodeId: tasksViewState.threadNodeId,
+    predictionThreadId: tasksViewState.predictionThreadId,
     currentContext: tasksViewState.currentContext,
     locationTags: tasksViewState.locationTags,
     durationMax: tasksViewState.durationMax,
@@ -4591,6 +5043,7 @@ function loadTasksViewState() {
   const saved = safeJsonParse(localStorage.getItem(TASKS_VIEW_STATE_KEY), null);
   if (!saved || typeof saved !== 'object') return;
   tasksViewState.threadNodeId = saved.threadNodeId || null;
+  tasksViewState.predictionThreadId = saved.predictionThreadId || null;
   tasksViewState.currentContext = saved.currentContext || 'Any';
   tasksViewState.locationTags = uniqTags(saved.locationTags || []);
   tasksViewState.durationMax = normalizeDurationValue(saved.durationMax);
@@ -5281,6 +5734,7 @@ function renderTasksPane() {
     };
     const resetAllFilters = () => {
       tasksViewState.threadNodeId = null;
+      tasksViewState.predictionThreadId = null;
       tasksViewState.currentContext = 'Any';
       tasksViewState.locationTags = [];
       tasksViewState.durationMax = null;
@@ -6340,9 +6794,10 @@ function renderTasksPaneV2() {
   root.classList.toggle('tasks-compact', !!tasksViewState.compactMode);
 
   const now = new Date();
+  const changedPredictions = settleTaskPredictions(now);
   const changedRecurring = runRecurringTasks(now);
   const changedArchive = applyArchivingRules(tasksViewState.archiveAfterDays, now);
-  if (changedRecurring || changedArchive) store.saveNow();
+  if (changedPredictions || changedRecurring || changedArchive) store.saveNow();
 
   const depMap = allTaskRefMap();
   const ctx = tasksViewState.currentContext === 'Any' ? null : tasksViewState.currentContext;
@@ -6351,9 +6806,14 @@ function renderTasksPaneV2() {
   const priSet = new Set(normalizePriorityList(tasksViewState.priorityValues || []));
   const textNeedle = (tasksViewState.searchText || '').trim().toLowerCase();
   const allTaskRefs = flattenTaskRefs();
+  const predictionRoots = Array.isArray(store.data.threads) ? store.data.threads.slice() : [];
 
   if (tasksViewState.threadNodeId && !nodeById.has(tasksViewState.threadNodeId)) {
     tasksViewState.threadNodeId = null;
+    saveTasksViewState();
+  }
+  if (tasksViewState.predictionThreadId && !predictionRoots.some((node) => node.id === tasksViewState.predictionThreadId)) {
+    tasksViewState.predictionThreadId = null;
     saveTasksViewState();
   }
   if (tasksViewState.focusTaskId && !allTaskRefs.some((ref) => ref.task.id === tasksViewState.focusTaskId)) {
@@ -6362,6 +6822,7 @@ function renderTasksPaneV2() {
   }
 
   const threadNodeId = tasksViewState.threadNodeId || null;
+  const predictionThreadId = tasksViewState.predictionThreadId || null;
   const refById = new Map(allTaskRefs.map((ref) => [ref.task.id, ref]));
   const rawFocusTaskId = tasksViewState.focusTaskId || null;
   const focusTaskId = rawFocusTaskId ? (refById.get(rawFocusTaskId)?.parentTask?.id || rawFocusTaskId) : null;
@@ -6465,6 +6926,25 @@ function renderTasksPaneV2() {
       return !ref.task.completed && (due?.state === 'overdue' || due?.state === 'soon');
     }).length,
   };
+  const predictionEntries = collectTaskPredictionEntries(allTaskRefs);
+  const activePredictions = filterPredictionEntriesByThread(predictionEntries.active, predictionThreadId)
+    .sort((a, b) => {
+      const da = parseIsoDate(a.resolveBy)?.getTime() ?? Infinity;
+      const db = parseIsoDate(b.resolveBy)?.getTime() ?? Infinity;
+      if (da !== db) return da - db;
+      return b.probability - a.probability;
+    });
+  const predictionHistory = filterPredictionEntriesByThread(predictionEntries.history, predictionThreadId)
+    .sort((a, b) => {
+      const da = parseIsoDate(a.resolvedAt)?.getTime() ?? 0;
+      const db = parseIsoDate(b.resolvedAt)?.getTime() ?? 0;
+      return db - da;
+    });
+  const resolvedPredictions = predictionHistory.filter((entry) => entry.outcome === 'success' || entry.outcome === 'failure');
+  const predictionSuccesses = resolvedPredictions.filter((entry) => entry.outcome === 'success').length;
+  const predictionSuccessRate = resolvedPredictions.length ? Math.round((predictionSuccesses / resolvedPredictions.length) * 100) : null;
+  const predictionBrier = predictionBrierScore(resolvedPredictions);
+  const predictionCalibration = predictionCalibrationRows(resolvedPredictions);
 
   const sorters = {
     priority: (a, b) => {
@@ -6694,6 +7174,21 @@ function renderTasksPaneV2() {
       store.saveNow();
       rerenderTasksPaneKeepViewport();
     });
+    const predictionBtn = el('button', {
+      class: `task-icon-btn${activeTaskPrediction(task) ? ' active prediction' : ''}`,
+      type: 'button',
+      title: activeTaskPrediction(task) ? 'Edit prediction' : 'Set prediction',
+      'aria-label': activeTaskPrediction(task) ? 'Edit prediction' : 'Set prediction',
+    }, '◔');
+    predictionBtn.addEventListener('click', () => {
+      const next = !isPredictionPanelOpen('tasks', task.id);
+      setPredictionPanelOpen('tasks', task.id, next);
+      if (next) {
+        setPausePanelOpen('tasks', task.id, false);
+        setTagPanelOpen('tasks', task.id, false);
+      }
+      rerenderTasksPaneKeepViewport();
+    });
     const pauseBtn = el('button', {
       class: `task-icon-btn${taskHasPauseState(task, depMap) ? ' active pause' : ''}`,
       type: 'button',
@@ -6703,7 +7198,10 @@ function renderTasksPaneV2() {
     pauseBtn.addEventListener('click', () => {
       const next = !isPausePanelOpen('tasks', task.id);
       setPausePanelOpen('tasks', task.id, next);
-      if (next) setTagPanelOpen('tasks', task.id, false);
+      if (next) {
+        setTagPanelOpen('tasks', task.id, false);
+        setPredictionPanelOpen('tasks', task.id, false);
+      }
       rerenderTasksPaneKeepViewport();
     });
     const detailBtn = el('button', {
@@ -6715,12 +7213,18 @@ function renderTasksPaneV2() {
     detailBtn.addEventListener('click', () => {
       const next = !isTagPanelOpen('tasks', task.id);
       setTagPanelOpen('tasks', task.id, next);
-      if (next) setPausePanelOpen('tasks', task.id, false);
+      if (next) {
+        setPausePanelOpen('tasks', task.id, false);
+        setPredictionPanelOpen('tasks', task.id, false);
+      }
       rerenderTasksPaneKeepViewport();
     });
-    tools.append(starBtn, pauseBtn, detailBtn);
+    tools.append(starBtn, predictionBtn, pauseBtn, detailBtn);
     head.append(tools);
     item.append(head);
+
+    const predictionBanner = buildTaskPredictionBanner(task, { now });
+    if (predictionBanner) item.append(predictionBanner);
 
     const badgeRow = buildTaskStateBadges(task, { now, depMap, done: meta?.done, ref });
     if (taskHasChildren(task)) {
@@ -6774,6 +7278,7 @@ function renderTasksPaneV2() {
     }
 
     if (isPausePanelOpen('tasks', task.id)) item.append(buildPauseControls(task.id, () => rerenderTasksPaneKeepViewport()));
+    if (isPredictionPanelOpen('tasks', task.id)) item.append(buildPredictionControls(task.id, () => rerenderTasksPaneKeepViewport()));
     if (isTagPanelOpen('tasks', task.id)) item.append(buildAvailabilityControls(ref.node.id, task.id, () => rerenderTasksPaneKeepViewport()));
 
     if (!opts.flat) {
@@ -6812,6 +7317,7 @@ function renderTasksPaneV2() {
     };
     const resetAllFilters = () => {
       tasksViewState.threadNodeId = null;
+      tasksViewState.predictionThreadId = null;
       tasksViewState.currentContext = 'Any';
       tasksViewState.locationTags = [];
       tasksViewState.durationMax = null;
@@ -6851,6 +7357,103 @@ function renderTasksPaneV2() {
     scorePanel.append(scoreHead, scoreSub, scoreBar, metricsSummary);
     statusPanel.append(scorePanel);
     controls.append(statusPanel);
+
+    const openPredictionTask = (entry) => {
+      if (!entry?.taskId) return;
+      tasksViewState.focusTaskId = entry.taskId;
+      tasksViewState.showBlocked = true;
+      tasksViewState.showArchived = true;
+      saveTasksViewState();
+      rerenderTasksPaneKeepViewport(entry.taskId);
+    };
+    const predictionPanel = el('section', { class: 'tasks-prediction-panel' });
+    const predictionHead = el('div', { class: 'tasks-prediction-head' });
+    predictionHead.append(el('div', { class: 'points-title' }, 'Predictions'));
+    const predictionThreadSel = el('select', { class: 'select-sm' });
+    predictionThreadSel.append(el('option', { value: '' }, 'Any made-in thread'));
+    predictionRoots.forEach((rootNode) => {
+      predictionThreadSel.append(el('option', { value: rootNode.id }, rootNode.name || 'Thread'));
+    });
+    predictionThreadSel.value = predictionThreadId || '';
+    predictionThreadSel.addEventListener('change', () => {
+      tasksViewState.predictionThreadId = predictionThreadSel.value || null;
+      saveTasksViewState();
+      renderTasksPane();
+    });
+    predictionHead.append(predictionThreadSel);
+    predictionPanel.append(predictionHead);
+    const predictionSummary = el('div', { class: 'tasks-summary tasks-prediction-summary' });
+    predictionSummary.append(
+      metric('Open', activePredictions.length, activePredictions.length ? 'good' : ''),
+      metric('Resolved', resolvedPredictions.length),
+      metric('Hit Rate', predictionSuccessRate == null ? '--' : `${predictionSuccessRate}%`, predictionSuccessRate != null && predictionSuccessRate >= 60 ? 'good' : ''),
+      metric('Brier', predictionBrier == null ? '--' : predictionBrier.toFixed(2), predictionBrier != null && predictionBrier <= 0.2 ? 'good' : '')
+    );
+    predictionPanel.append(predictionSummary);
+
+    const calibrationWrap = el('div', { class: 'tasks-prediction-section' });
+    calibrationWrap.append(el('div', { class: 'filter-label' }, 'Calibration'));
+    if (predictionCalibration.length) {
+      const calibrationList = el('div', { class: 'prediction-calibration-list' });
+      predictionCalibration.forEach((bucket) => {
+        const row = el('div', { class: 'prediction-calibration-row' });
+        row.append(
+          el('strong', { class: 'prediction-calibration-bucket' }, bucket.label),
+          el('span', { class: 'prediction-calibration-values' }, `${Math.round(bucket.averageProbability)}% predicted • ${Math.round(bucket.actualRate)}% happened`),
+          el('span', { class: 'subtext prediction-calibration-count' }, `${bucket.total} call${bucket.total === 1 ? '' : 's'}`)
+        );
+        calibrationList.append(row);
+      });
+      calibrationWrap.append(calibrationList);
+    } else {
+      calibrationWrap.append(el('div', { class: 'empty' }, 'No resolved predictions yet.'));
+    }
+    predictionPanel.append(calibrationWrap);
+
+    const predictionLists = el('div', { class: 'tasks-prediction-lists' });
+    const makePredictionList = (title, entries, emptyText, kind) => {
+      const section = el('div', { class: 'tasks-prediction-list' });
+      section.append(el('div', { class: 'filter-label' }, title));
+      if (!entries.length) {
+        section.append(el('div', { class: 'empty' }, emptyText));
+        return section;
+      }
+      entries.slice(0, 6).forEach((entry) => {
+        const row = el('div', { class: `prediction-entry${entry.outcome ? ` ${entry.outcome}` : ''}` });
+        const identity = el('div', { class: 'prediction-entry-main' });
+        identity.append(
+          el('div', { class: 'prediction-entry-title' }, entry.taskText || 'Untitled task'),
+          el('div', { class: 'prediction-entry-meta' }, [
+            `${entry.probability}%`,
+            ` • `,
+            kind === 'active'
+              ? `by ${formatPredictionDeadline(entry.resolveBy)}`
+              : `${entry.outcome === 'success' ? 'Succeeded' : (entry.outcome === 'failure' ? 'Missed' : 'Superseded')} ${entry.resolvedAt ? formatPredictionDeadline(entry.resolvedAt) : ''}`,
+            entry.madeInRootName ? ` • ${entry.madeInRootName}` : '',
+          ].join(''))
+        );
+        const tools = el('div', { class: 'prediction-entry-tools' });
+        const stateTone = entry.outcome === 'success'
+          ? 'done'
+          : (entry.outcome === 'failure' ? 'blocked' : 'scheduled');
+        const stateLabel = kind === 'active'
+          ? (predictionRelativeLabel(entry.resolveBy, now) || 'Open')
+          : (entry.outcome === 'success' ? 'Hit' : (entry.outcome === 'failure' ? 'Miss' : 'Superseded'));
+        tools.append(el('span', { class: `pill task-state-chip ${stateTone}` }, stateLabel));
+        const openBtn = el('button', { class: 'btn ghost btn-lite', type: 'button' }, 'Open');
+        openBtn.addEventListener('click', () => openPredictionTask(entry));
+        tools.append(openBtn);
+        row.append(identity, tools);
+        section.append(row);
+      });
+      return section;
+    };
+    predictionLists.append(
+      makePredictionList('Open Calls', activePredictions, 'No active predictions.', 'active'),
+      makePredictionList('Recent Results', predictionHistory, 'No prediction history yet.', 'history')
+    );
+    predictionPanel.append(predictionLists);
+    controls.append(predictionPanel);
 
     const filterPanel = el('section', { class: 'tasks-filter-panel' });
     const searchRow = el('div', { class: 'filter-row' });
@@ -7215,6 +7818,11 @@ if (typeof module !== 'undefined' && module.exports) {
       followUpStatus,
       reviewStreakInfo,
       markDailyReviewCompleted,
+      clampPredictionProbability,
+      predictionBucketLabel,
+      predictionCalibrationRows,
+      predictionBrierScore,
+      maybeResolveTaskPrediction,
       pointsForTaskCompletion,
       setTaskCompleted,
       setSubtaskCompleted,

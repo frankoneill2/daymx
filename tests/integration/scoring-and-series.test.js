@@ -27,7 +27,7 @@ describe('scoring and series progression', () => {
     expect(__test.gamificationSummary(when).points).toBe(20);
   });
 
-  it('completes a series task only after all active subtasks are done and then awards points', () => {
+  it('keeps series task completion manual even after all active subtasks are done', () => {
     const when = new Date(2026, 1, 7, 12, 0, 0);
     const task = {
       duration: 15,
@@ -47,6 +47,10 @@ describe('scoring and series progression', () => {
     expect(__test.gamificationSummary(when).points).toBe(0);
 
     __test.setSubtaskCompleted(task, task.series[1], true, when);
+    expect(task.completed).toBe(false);
+    expect(__test.gamificationSummary(when).points).toBe(0);
+
+    __test.setTaskCompleted(task, true, when);
     expect(task.completed).toBe(true);
     expect(__test.gamificationSummary(when).points).toBe(25);
   });
@@ -61,4 +65,3 @@ describe('scoring and series progression', () => {
     expect(__test.gamificationSummary(new Date(2026, 1, 7, 12, 0, 0)).streak).toBe(2);
   });
 });
-
