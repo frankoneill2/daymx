@@ -5731,7 +5731,7 @@ function renderTasksPaneV2() {
       renderProgress();
       renderStoryCard();
     }
-    renderTasksPane();
+    rerenderTasksPaneKeepViewport();
   };
   const rememberDeferredCompletion = (ref, completed) => {
     const rootTaskId = ref?.rootTask?.id || ref?.task?.id || null;
@@ -5746,11 +5746,11 @@ function renderTasksPaneV2() {
   };
   const openComposer = (kind, taskId) => {
     taskComposerState = { kind, taskId };
-    renderTasksPane();
+    rerenderTasksPaneKeepViewport();
   };
   const closeComposer = () => {
     taskComposerState = null;
-    renderTasksPane();
+    rerenderTasksPaneKeepViewport();
   };
   const appendComposer = (host, ref) => {
     if (!taskComposerState || taskComposerState.taskId !== ref.task.id) return;
@@ -5813,7 +5813,7 @@ function renderTasksPaneV2() {
       toggle.addEventListener('click', () => {
         if (collapsedTaskTrees.has(task.id)) collapsedTaskTrees.delete(task.id);
         else collapsedTaskTrees.add(task.id);
-        renderTasksPane();
+        rerenderTasksPaneKeepViewport();
       });
       titleGroup.append(toggle);
     } else {
@@ -5869,7 +5869,7 @@ function renderTasksPaneV2() {
     starBtn.addEventListener('click', () => {
       task.starred = !task.starred;
       store.saveNow();
-      renderTasksPane();
+      rerenderTasksPaneKeepViewport();
     });
     const pauseBtn = el('button', {
       class: `task-icon-btn${taskHasPauseState(task, depMap) ? ' active pause' : ''}`,
@@ -5881,7 +5881,7 @@ function renderTasksPaneV2() {
       const next = !isPausePanelOpen('tasks', task.id);
       setPausePanelOpen('tasks', task.id, next);
       if (next) setTagPanelOpen('tasks', task.id, false);
-      renderTasksPane();
+      rerenderTasksPaneKeepViewport();
     });
     const detailBtn = el('button', {
       class: `task-icon-btn${isTagPanelOpen('tasks', task.id) ? ' active' : ''}`,
@@ -5893,7 +5893,7 @@ function renderTasksPaneV2() {
       const next = !isTagPanelOpen('tasks', task.id);
       setTagPanelOpen('tasks', task.id, next);
       if (next) setPausePanelOpen('tasks', task.id, false);
-      renderTasksPane();
+      rerenderTasksPaneKeepViewport();
     });
     tools.append(starBtn, pauseBtn, detailBtn);
     head.append(tools);
@@ -5939,15 +5939,15 @@ function renderTasksPaneV2() {
         revealBtn.addEventListener('click', () => {
           tasksViewState.showHiddenChildren = true;
           saveTasksViewState();
-          renderTasksPane();
+          rerenderTasksPaneKeepViewport();
         });
         hiddenRow.append(revealBtn);
         item.append(hiddenRow);
       }
     }
 
-    if (isPausePanelOpen('tasks', task.id)) item.append(buildPauseControls(task.id, () => renderTasksPane()));
-    if (isTagPanelOpen('tasks', task.id)) item.append(buildAvailabilityControls(ref.node.id, task.id, () => renderTasksPane()));
+    if (isPausePanelOpen('tasks', task.id)) item.append(buildPauseControls(task.id, () => rerenderTasksPaneKeepViewport()));
+    if (isTagPanelOpen('tasks', task.id)) item.append(buildAvailabilityControls(ref.node.id, task.id, () => rerenderTasksPaneKeepViewport()));
 
     if (!opts.flat) {
       appendComposer(item, ref);
@@ -6231,7 +6231,7 @@ function renderTasksPaneV2() {
       starBtn.addEventListener('click', () => {
         selectedRefs.forEach((ref) => { ref.task.starred = true; });
         store.saveNow();
-        renderTasksPane();
+        rerenderTasksPaneKeepViewport();
       });
       const priSel = el('select', { class: 'select-sm' });
       [1, 2, 3, 4, 5].forEach((priority) => priSel.append(el('option', { value: String(priority) }, `P${priority}`)));
@@ -6277,21 +6277,21 @@ function renderTasksPaneV2() {
     nudgeBtn.addEventListener('click', () => {
       nudgeFollowUp(task, 2, now);
       store.saveNow();
-      renderTasksPane();
+      rerenderTasksPaneKeepViewport();
     });
     const clearWaitBtn = el('button', { class: 'btn ghost btn-lite', type: 'button' }, 'Clear waiting');
     clearWaitBtn.disabled = !(task.waitingOn && task.waitingOn.trim());
     clearWaitBtn.addEventListener('click', () => {
       task.waitingOn = '';
       store.saveNow();
-      renderTasksPane();
+      rerenderTasksPaneKeepViewport();
     });
     const openBtn = el('button', { class: 'btn ghost btn-lite', type: 'button' }, 'Open');
     openBtn.addEventListener('click', () => {
       tasksViewState.focusTaskId = task.id;
       tasksViewState.showBlocked = true;
       saveTasksViewState();
-      renderTasksPane();
+      rerenderTasksPaneKeepViewport();
     });
     actions.append(nudgeBtn, clearWaitBtn, openBtn);
     item.append(pin, main, actions);
