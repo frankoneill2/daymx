@@ -1277,6 +1277,23 @@ button:focus-visible {
   line-height: 1.45;
 }
 
+.task-tree-wait-banner {
+  margin-top: 2px;
+  padding: 4px 8px;
+  border-left: 3px solid var(--danger);
+  border-radius: 8px;
+  background: linear-gradient(90deg, color-mix(in srgb, var(--danger) 14%, transparent), rgba(0, 0, 0, 0));
+  color: color-mix(in srgb, var(--danger) 82%, #ffd9df 18%);
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.task-tree-wait-banner--paused {
+  color: color-mix(in srgb, var(--warn) 82%, #ffe9bf 18%);
+  border-left-color: var(--warn);
+  background: linear-gradient(90deg, color-mix(in srgb, var(--warn) 14%, transparent), rgba(0, 0, 0, 0));
+}
+
 .task-tree-tools {
   display: flex;
   flex-wrap: wrap;
@@ -1555,6 +1572,11 @@ button:focus-visible {
 .task-state-chip.blocked {
   color: color-mix(in srgb, var(--warn) 70%, #ffe8cf 30%);
   background: color-mix(in srgb, var(--warn) 16%, #2a1d12);
+}
+
+.task-state-chip.waiting {
+  color: color-mix(in srgb, var(--danger) 72%, #ffe2e7 28%);
+  background: color-mix(in srgb, var(--danger) 22%, #2a1015);
 }
 
 .task-state-chip.scheduled {

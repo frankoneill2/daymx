@@ -1458,41 +1458,12 @@ function setTaskCompleted(task, completed, now = new Date(), opts = {}) {
 function setSubtaskCompleted(task, subtask, completed, now = new Date()) {
   if (!subtask) return;
   setTaskCompleted(subtask, completed, now, { syncAncestors: false });
-  const children = taskHasChildren(task) ? taskChildList(task) : (Array.isArray(task?.series) ? task.series : []);
-  if (!children.length) return;
-  const allDone = children.every((child) => !!child.completed);
-  if (allDone) {
-    setTaskCompleted(task, true, now, { syncAncestors: false });
-  } else {
-    task.completed = false;
-    task.completedAt = null;
-    task.archivedAt = null;
-    task.nextRecurringAt = null;
-  }
   if (store?.data?.threads && subtask?.id) syncTaskAncestorsCompletion(subtask.id, now);
 }
 
-function syncTaskCompletionFromChildren(task, now = new Date(), opts = {}) {
-  const children = taskChildList(task);
-  if (!children.length) {
-    if (opts.reopenWhenEmpty) {
-      task.completed = false;
-      task.completedAt = null;
-      task.archivedAt = null;
-      task.nextRecurringAt = null;
-    }
-    return;
-  }
-  const allDone = children.every((child) => !!child.completed);
-  if (allDone) {
-    if (!task.completed) setTaskCompleted(task, true, now, { syncAncestors: false });
-    return;
-  }
-  if (!task.completed) return;
-  task.completed = false;
-  task.completedAt = null;
-  task.archivedAt = null;
-  task.nextRecurringAt = null;
+function syncTaskCompletionFromChildren() {
+  // Completion is now managed manually for tasks with child items.
+  return;
 }
 
 function syncTaskAncestorsCompletion(taskId, now = new Date()) {
@@ -1811,9 +1782,13 @@ function taskStatusMeta(task, opts = {}) {
 function buildTaskStateBadges(task, opts = {}) {
   const pri = clampPriority(task?.priority, 3);
   const status = taskStatusMeta(task, opts);
+  const waiting = String(task?.waitingOn || '').trim();
   const row = el('div', { class: 'task-state-row' });
   row.append(el('span', { class: 'pill task-state-chip priority' }, `P${pri}`));
   row.append(el('span', { class: `pill task-state-chip ${status.tone}` }, status.label));
+  if (waiting) {
+    row.append(el('span', { class: 'pill task-state-chip waiting' }, `Waiting on: ${waiting}`));
+  }
   return row;
 }
 
@@ -6476,6 +6451,12 @@ function renderTasksPaneV2() {
       const summary = childSummary(task);
       if (summary) infoParts.push(summary);
       if (infoParts.length) titleWrap.append(el('div', { class: 'task-tree-subline' }, infoParts.join(' • ')));
+    }
+    const waiting = String(task.waitingOn || '').trim();
+    if (waiting) {
+      titleWrap.append(el('div', { class: 'task-tree-wait-banner' }, `⏸ Waiting on ${waiting}`));
+    } else if (task.blocked) {
+      titleWrap.append(el('div', { class: 'task-tree-wait-banner task-tree-wait-banner--paused' }, '⏸ Paused'));
     }
     head.append(titleGroup, titleWrap);
 
