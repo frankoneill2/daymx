@@ -3301,7 +3301,8 @@ function renderStoryCard() {
     const wrap = el('div', { class: 'inline-item question-inline-row review-question-row' });
     const main = el('div', { class: 'review-question-main' });
     const check = el('input', { type: 'checkbox', class: 'review-question-check' });
-    const label = el('input', { type: 'text', class: 'task-title-input' });
+    const label = el('textarea', { class: 'task-title-input review-question-input', rows: '1' });
+    initTaskTextInput(label);
     label.value = q.text;
     label.addEventListener('change', () => {
       const live = findNodeById(store.data.threads, n.id);

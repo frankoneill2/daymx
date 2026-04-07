@@ -1018,10 +1018,18 @@ button:focus-visible {
   grid-template-columns: auto minmax(0, 1fr);
   gap: 10px;
   align-items: start;
+  width: 100%;
+  min-width: 0;
 }
 
 .review-question-check {
   margin-top: 8px;
+}
+
+.review-question-input {
+  min-height: 34px;
+  resize: none;
+  overflow: hidden;
 }
 
 .review-question-tools {
