@@ -1214,6 +1214,163 @@ button:focus-visible {
   grid-column: 1 / -1;
 }
 
+.task.task-tree-card {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 8px;
+  margin-left: calc(var(--task-depth, 0) * 18px);
+}
+
+.task.task-tree-card.flat-task-card {
+  margin-left: 0;
+}
+
+.task-tree-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.task-tree-title-group {
+  min-width: 0;
+  flex: 1;
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+}
+
+.task-tree-title-group > input[type='checkbox'] {
+  margin-top: 8px;
+}
+
+.task-tree-toggle {
+  min-width: 28px;
+  height: 28px;
+  padding: 0;
+}
+
+.task-tree-spacer {
+  width: 28px;
+  min-width: 28px;
+}
+
+.task-tree-title-wrap {
+  min-width: 0;
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.task-tree-title {
+  font-family: 'Space Grotesk', 'Manrope', sans-serif;
+  font-weight: 700;
+  font-size: 14px;
+}
+
+.task-tree-subline {
+  color: var(--subtext);
+  font-size: 12px;
+  font-weight: 600;
+  line-height: 1.45;
+}
+
+.task-tree-tools {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 6px;
+}
+
+.task-icon-btn {
+  appearance: none;
+  border: 1px solid var(--border-soft);
+  border-radius: 10px;
+  background: rgba(13, 25, 39, 0.82);
+  color: #dceeff;
+  min-width: 32px;
+  height: 32px;
+  padding: 0 8px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  transition: border-color 140ms ease, background 140ms ease, transform 140ms ease;
+}
+
+.task-icon-btn:hover {
+  transform: translateY(-1px);
+  border-color: color-mix(in srgb, var(--accent) 48%, var(--border));
+}
+
+.task-icon-btn.active {
+  border-color: color-mix(in srgb, var(--accent) 56%, var(--border));
+  background: rgba(83, 194, 255, 0.14);
+}
+
+.task-icon-btn.active.star {
+  border-color: color-mix(in srgb, var(--warn) 62%, var(--border));
+  background: color-mix(in srgb, var(--warn) 16%, #1f2025);
+  color: #ffe0a7;
+}
+
+.task-icon-btn.active.pause {
+  border-color: color-mix(in srgb, var(--warn) 58%, var(--border));
+  background: color-mix(in srgb, var(--warn) 12%, #241912);
+  color: #ffd1a3;
+}
+
+.task-tree-card.completed .task-tree-title {
+  text-decoration: line-through;
+  text-decoration-thickness: 2px;
+}
+
+.task-tree-card .task-state-row,
+.task-tree-card .task-meta-row {
+  margin-top: 0;
+}
+
+.task-tree-action-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.task-tree-children {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-left: 18px;
+  padding-left: 10px;
+  border-left: 1px solid color-mix(in srgb, var(--border-soft) 82%, transparent);
+}
+
+.task-compose-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.task-compose-row input {
+  flex: 1;
+  min-width: 180px;
+}
+
+.task-details-panel,
+.task-pause-panel {
+  margin-top: -2px;
+}
+
+.task-panel-inline-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  justify-content: flex-end;
+}
+
 .task-title-row {
   display: flex;
   align-items: center;
@@ -1286,12 +1443,21 @@ button:focus-visible {
   gap: 8px;
 }
 
+.tasks-compact .task.task-tree-card {
+  margin-left: calc(var(--task-depth, 0) * 14px);
+}
+
 .tasks-compact .task .ctx {
   font-size: 11px;
 }
 
 .tasks-compact .tagline {
   margin-top: 3px;
+}
+
+.tasks-compact .task-tree-subline,
+.tasks-compact .task-tree-action-row .btn.btn-lite {
+  font-size: 11px;
 }
 
 .task-state-row {
@@ -1845,7 +2011,7 @@ button.task-meta-value:hover {
 }
 
 .review-series-row.editable {
-  grid-template-columns: 20px 64px minmax(0, 1fr) auto auto;
+  grid-template-columns: 20px minmax(0, 1fr) auto auto;
 }
 
 .review-series-row.current {
@@ -1905,7 +2071,7 @@ button.task-meta-value:hover {
 
 .review-series-add {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) 78px auto;
+  grid-template-columns: minmax(0, 1fr) auto;
   gap: 6px;
   align-items: center;
 }
@@ -2872,6 +3038,33 @@ button.pill-btn.add {
     grid-column: 1 / -1;
     justify-content: flex-end;
     flex-wrap: wrap;
+  }
+
+  .task.task-tree-card {
+    margin-left: calc(var(--task-depth, 0) * 10px);
+  }
+
+  .task-tree-head {
+    flex-direction: column;
+  }
+
+  .task-tree-tools,
+  .task-panel-inline-row {
+    width: 100%;
+    justify-content: flex-start;
+  }
+
+  .task-tree-children {
+    margin-left: 10px;
+    padding-left: 8px;
+  }
+
+  .task-compose-row {
+    flex-direction: column;
+  }
+
+  .task-compose-row input {
+    width: 100%;
   }
 
   .tasks-controls {

@@ -102,18 +102,20 @@ function taskDurationMins(t) {
 }
 
 function isSeriesTask(t) {
-  return Array.isArray(t?.series) && t.series.length > 0;
+  return Array.isArray(t?.children) && t.children.length > 0;
 }
 
 function seriesStats(t) {
   if (!isSeriesTask(t)) return null;
-  const total = t.series.length;
-  const done = t.series.filter(s => s.completed).length;
+  const list = t.children || [];
+  const total = list.length;
+  const done = list.filter((s) => s.completed).length;
   const remaining = total - done;
-  const maxRank = Math.max(...t.series.map(s => Math.max(1, Number(s.rank) || 1)));
-  const incomplete = t.series.filter(s => !s.completed);
-  const activeRank = incomplete.length ? Math.min(...incomplete.map(s => Math.max(1, Number(s.rank) || 1))) : null;
-  const activeItems = activeRank == null ? [] : incomplete.filter(s => (Number(s.rank) || 1) === activeRank);
+  const incomplete = list.filter((s) => !s.completed);
+  const sequential = (t.childMode || 'parallel') === 'sequential';
+  const activeItems = sequential ? (incomplete.length ? [incomplete[0]] : []) : incomplete;
+  const activeRank = activeItems.length ? list.indexOf(activeItems[0]) + 1 : null;
+  const maxRank = total;
   return { total, done, remaining, maxRank, activeRank, activeItems };
 }
 
@@ -291,6 +293,11 @@ const openTagPanels = {
   review: new Set(),
   tasks: new Set(),
 };
+const openPausePanels = {
+  prepare: new Set(),
+  review: new Set(),
+  tasks: new Set(),
+};
 
 function isTagPanelOpen(view, taskId) {
   const set = openTagPanels[view];
@@ -300,6 +307,19 @@ function isTagPanelOpen(view, taskId) {
 
 function setTagPanelOpen(view, taskId, open) {
   const set = openTagPanels[view];
+  if (!set || !taskId) return;
+  if (open) set.add(taskId);
+  else set.delete(taskId);
+}
+
+function isPausePanelOpen(view, taskId) {
+  const set = openPausePanels[view];
+  if (!set || !taskId) return false;
+  return set.has(taskId);
+}
+
+function setPausePanelOpen(view, taskId, open) {
+  const set = openPausePanels[view];
   if (!set || !taskId) return;
   if (open) set.add(taskId);
   else set.delete(taskId);
@@ -727,22 +747,107 @@ function createTask(text = '') {
     loc: '',
     locations: [],
     duration: null,
+    blocked: false,
+    starred: false,
+    children: [],
+    childMode: 'parallel',
     series: [],
   };
 }
 
 function createSubtask(text = '', rank = 1) {
-  const ts = nowIso();
-  return {
-    id: uid('s'),
-    text,
-    rank: Math.max(1, Number(rank) || 1),
-    order: 0,
-    completed: false,
-    createdAt: ts,
-    completedAt: null,
-    archivedAt: null,
-  };
+  const task = createTask(text);
+  task.id = uid('s');
+  task.rank = Math.max(1, Number(rank) || 1);
+  task.order = 0;
+  return task;
+}
+
+function legacySeriesOrder(list = []) {
+  return list.slice().sort((a, b) => {
+    const ra = Math.max(1, Number(a.rank) || 1);
+    const rb = Math.max(1, Number(b.rank) || 1);
+    if (ra !== rb) return ra - rb;
+    const oa = Number.isFinite(a.order) ? Number(a.order) : 0;
+    const ob = Number.isFinite(b.order) ? Number(b.order) : 0;
+    if (oa !== ob) return oa - ob;
+    return (a.text || '').localeCompare(b.text || '');
+  });
+}
+
+function legacySeriesItemToTask(item, parentTask = null) {
+  const task = createTask(item?.text || '');
+  task.id = item?.id || uid('s');
+  task.text = item?.text || '';
+  task.createdAt = item?.createdAt || task.createdAt;
+  task.completed = !!item?.completed;
+  task.completedAt = item?.completedAt || null;
+  task.archivedAt = item?.archivedAt || null;
+  task.priority = clampPriority(parentTask?.priority, 3);
+  task.locations = taskLocations(parentTask || {});
+  task.loc = task.locations[0] || '';
+  task.rank = Math.max(1, Number(item?.rank) || 1);
+  task.order = Number.isFinite(item?.order) ? Number(item.order) : 0;
+  if (task.completed && !task.completionPointsAwardedAt) {
+    task.completionPointsAwardedAt = task.completedAt || nowIso();
+  }
+  return task;
+}
+
+function normalizeTaskNode(task, opts = {}) {
+  if (!task || typeof task !== 'object') return;
+  if (!task.id) task.id = uid(opts.idPrefix || 't');
+  task.text = task.text || '';
+  if (typeof task.completed !== 'boolean') task.completed = !!task.completed;
+  if (!('createdAt' in task)) task.createdAt = nowIso();
+  if (!('completedAt' in task)) task.completedAt = null;
+  if (!('archivedAt' in task)) task.archivedAt = null;
+  if (typeof task.priority !== 'number' || task.priority < 1 || task.priority > 5) task.priority = 3;
+  if (!('availableAt' in task)) task.availableAt = null;
+  if (!('dueAt' in task)) task.dueAt = null;
+  if (!('contexts' in task) || !Array.isArray(task.contexts)) task.contexts = [];
+  if (!('blockedBy' in task) || !Array.isArray(task.blockedBy)) task.blockedBy = [];
+  task.blockedBy = task.blockedBy.filter(Boolean);
+  if (!('waitingOn' in task)) task.waitingOn = '';
+  if (!('followUpAt' in task)) task.followUpAt = null;
+  if (!('recurrence' in task)) task.recurrence = 'none';
+  if (!['none', 'daily', 'weekly', 'monthly'].includes(task.recurrence)) task.recurrence = 'none';
+  if (!('nextRecurringAt' in task)) task.nextRecurringAt = null;
+  if (!('completionPointsAwardedAt' in task)) task.completionPointsAwardedAt = null;
+  if (!('loc' in task)) task.loc = '';
+  if (!('locations' in task) || !Array.isArray(task.locations)) task.locations = [];
+  if (!('duration' in task)) task.duration = null;
+  if (!('blocked' in task)) task.blocked = false;
+  if (!('starred' in task)) task.starred = false;
+  if (!('childMode' in task) || !['parallel', 'sequential'].includes(task.childMode)) {
+    task.childMode = opts.defaultChildMode || 'parallel';
+  }
+  if (!('children' in task) || !Array.isArray(task.children)) task.children = [];
+
+  task.duration = normalizeDurationValue(task.duration);
+  const legacyLoc = normalizeTagValue(task.loc || '');
+  if (legacyLoc && (!task.locations || !task.locations.length)) task.locations = [legacyLoc];
+  task.locations = uniqTags(task.locations);
+  if (!task.loc && task.locations.length) task.loc = task.locations[0];
+
+  const legacySeries = Array.isArray(task.series) ? legacySeriesOrder(task.series) : [];
+  if (legacySeries.length) {
+    const existingIds = new Set((task.children || []).map((child) => child.id));
+    legacySeries.forEach((item) => {
+      const migrated = legacySeriesItemToTask(item, task);
+      if (!existingIds.has(migrated.id)) task.children.push(migrated);
+    });
+    task.childMode = 'sequential';
+    task.series = [];
+  } else if (!Array.isArray(task.series)) {
+    task.series = [];
+  }
+
+  task.children.forEach((child) => normalizeTaskNode(child));
+  if (task.completed && !task.completedAt) task.completedAt = task.createdAt || nowIso();
+  if (task.completed && !task.completionPointsAwardedAt) {
+    task.completionPointsAwardedAt = task.completedAt || nowIso();
+  }
 }
 
 // Pantry creators
@@ -893,11 +998,11 @@ function moveTaskRelative(nodeId, sourceTaskId, targetTaskId, placeAfter = false
 }
 
 function refreshSeriesOrder(task) {
-  (task.series || []).forEach((s, idx) => { s.order = idx; });
+  (taskChildList(task) || []).forEach((s, idx) => { s.order = idx; });
 }
 
 function sortSeriesByRankOrder(task) {
-  const list = task?.series;
+  const list = taskChildList(task);
   if (!Array.isArray(list)) return;
   list.sort((a, b) => {
     const ra = Math.max(1, Number(a.rank) || 1);
@@ -911,10 +1016,20 @@ function sortSeriesByRankOrder(task) {
   refreshSeriesOrder(task);
 }
 
+function taskChildList(task) {
+  return Array.isArray(task?.children) ? task.children : [];
+}
+
+function taskHasChildren(task) {
+  return taskChildList(task).length > 0;
+}
+
+function taskChildMode(task) {
+  return task?.childMode === 'sequential' ? 'sequential' : 'parallel';
+}
+
 function nextSeriesRank(task) {
-  const ranks = (task?.series || []).map((s) => Math.max(1, Number(s.rank) || 1));
-  if (!ranks.length) return 1;
-  return Math.max(...ranks) + 1;
+  return (task?.children || []).length + 1;
 }
 
 function addSubtaskToTask(task, text, rank = null, now = new Date()) {
@@ -922,9 +1037,10 @@ function addSubtaskToTask(task, text, rank = null, now = new Date()) {
   if (!label) return null;
   const resolvedRank = rank == null ? nextSeriesRank(task) : Math.max(1, Number(rank) || 1);
   const item = createSubtask(label, resolvedRank);
-  item.order = (task.series || []).length;
-  task.series = (task.series || []).concat([item]);
-  sortSeriesByRankOrder(task);
+  const list = Array.isArray(task.children) ? task.children : [];
+  const insertAt = Math.max(0, Math.min(list.length, resolvedRank - 1));
+  list.splice(insertAt, 0, item);
+  task.children = list;
   // Any newly-added subtask should re-open the parent task if it was previously complete.
   task.completed = false;
   task.completedAt = null;
@@ -935,18 +1051,86 @@ function addSubtaskToTask(task, text, rank = null, now = new Date()) {
 }
 
 function moveSubtaskRelative(nodeId, taskId, sourceSubtaskId, targetSubtaskId, placeAfter = false) {
-  const node = findNodeById(store.data.threads || [], nodeId);
-  const task = (node?.tasks || []).find((t) => t.id === taskId);
-  const list = task?.series;
+  const task = findTaskRefById(taskId)?.task || null;
+  const list = task?.children;
   if (!Array.isArray(list)) return false;
-  const source = list.find((s) => s.id === sourceSubtaskId);
-  const target = list.find((s) => s.id === targetSubtaskId);
-  if (!source || !target || source.id === target.id) return false;
-  source.rank = Math.max(1, Number(target.rank) || 1);
-  const targetOrder = Number.isFinite(target.order) ? Number(target.order) : 0;
-  source.order = targetOrder + (placeAfter ? 0.5 : -0.5);
-  sortSeriesByRankOrder(task);
+  const sourceIndex = list.findIndex((s) => s.id === sourceSubtaskId);
+  const targetIndex = list.findIndex((s) => s.id === targetSubtaskId);
+  return reorderListByIndex(list, sourceIndex, targetIndex, placeAfter);
+}
+
+function findTaskParentInfo(taskId) {
+  const ref = findTaskRefById(taskId);
+  if (!ref) return null;
+  if (ref.parentTask) {
+    const list = taskChildList(ref.parentTask);
+    const index = list.findIndex((task) => task.id === taskId);
+    if (index < 0) return null;
+    return { node: ref.node, parentTask: ref.parentTask, list, index, ref };
+  }
+  const list = Array.isArray(ref.node?.tasks) ? ref.node.tasks : [];
+  const index = list.findIndex((task) => task.id === taskId);
+  if (index < 0) return null;
+  return { node: ref.node, parentTask: null, list, index, ref };
+}
+
+function updateTaskById(taskId, updater) {
+  const ref = findTaskRefById(taskId);
+  if (!ref || typeof updater !== 'function') return false;
+  updater(ref.task, ref);
   return true;
+}
+
+function removeTaskById(taskId, now = new Date()) {
+  const info = findTaskParentInfo(taskId);
+  if (!info) return false;
+  info.list.splice(info.index, 1);
+  if (info.parentTask) {
+    syncTaskCompletionFromChildren(info.parentTask, now, { reopenWhenEmpty: true });
+    syncTaskAncestorsCompletion(info.parentTask.id, now);
+  }
+  return true;
+}
+
+function insertTaskIntoList(list, task, index = null) {
+  if (!Array.isArray(list) || !task) return false;
+  const insertAt = index == null ? list.length : Math.max(0, Math.min(list.length, Number(index) || 0));
+  list.splice(insertAt, 0, task);
+  return true;
+}
+
+function addChildTask(parentTaskId, text, index = null, now = new Date()) {
+  const parent = findTaskRefById(parentTaskId)?.task || null;
+  if (!parent) return null;
+  const label = String(text || '').trim();
+  if (!label) return null;
+  const task = createSubtask(label, (index == null ? taskChildList(parent).length : index) + 1);
+  const list = taskChildList(parent);
+  insertTaskIntoList(list, task, index);
+  parent.children = list;
+  parent.completed = false;
+  parent.completedAt = null;
+  parent.archivedAt = null;
+  parent.nextRecurringAt = null;
+  awardPoints(5, now);
+  return task;
+}
+
+function addSiblingTask(taskId, text, placeAfter = true, now = new Date()) {
+  const info = findTaskParentInfo(taskId);
+  const label = String(text || '').trim();
+  if (!info || !label) return null;
+  const task = info.parentTask ? createSubtask(label) : createTask(label);
+  const offset = placeAfter ? 1 : 0;
+  insertTaskIntoList(info.list, task, info.index + offset);
+  if (info.parentTask) {
+    info.parentTask.completed = false;
+    info.parentTask.completedAt = null;
+    info.parentTask.archivedAt = null;
+    info.parentTask.nextRecurringAt = null;
+    awardPoints(5, now);
+  }
+  return task;
 }
 
 // Reordering helpers (pantry categories)
@@ -1033,53 +1217,7 @@ function normalizeNode(n) {
   n.name = n.name || 'Untitled';
   if (typeof n.enabled !== 'boolean') n.enabled = true;
   if (typeof n.collapsed !== 'boolean') n.collapsed = false;
-  n.tasks.forEach(t => {
-    if (typeof t.completed !== 'boolean') t.completed = !!t.completed;
-    if (!('createdAt' in t)) t.createdAt = nowIso();
-    if (!('completedAt' in t)) t.completedAt = null;
-    if (!('archivedAt' in t)) t.archivedAt = null;
-    if (typeof t.priority !== 'number' || t.priority < 1 || t.priority > 5) t.priority = 3;
-    if (!('availableAt' in t)) t.availableAt = null;
-    if (!('dueAt' in t)) t.dueAt = null;
-    if (!('contexts' in t)) t.contexts = [];
-    if (!Array.isArray(t.contexts)) t.contexts = [];
-    if (!('blockedBy' in t)) t.blockedBy = [];
-    if (!Array.isArray(t.blockedBy)) t.blockedBy = [];
-    t.blockedBy = t.blockedBy.filter(Boolean);
-    if (!('waitingOn' in t)) t.waitingOn = '';
-    if (!('followUpAt' in t)) t.followUpAt = null;
-    if (!('recurrence' in t)) t.recurrence = 'none';
-    if (!['none', 'daily', 'weekly', 'monthly'].includes(t.recurrence)) t.recurrence = 'none';
-    if (!('nextRecurringAt' in t)) t.nextRecurringAt = null;
-    if (!('completionPointsAwardedAt' in t)) t.completionPointsAwardedAt = null;
-    if (!('loc' in t)) t.loc = '';
-    if (!('locations' in t)) t.locations = [];
-    if (!Array.isArray(t.locations)) t.locations = [];
-    if (!('duration' in t)) t.duration = null;
-    t.duration = normalizeDurationValue(t.duration);
-    const legacyLoc = normalizeTagValue(t.loc || '');
-    if (legacyLoc && (!t.locations || !t.locations.length)) t.locations = [legacyLoc];
-    t.locations = uniqTags(t.locations);
-    if (!t.loc && t.locations.length) t.loc = t.locations[0];
-    if (!('series' in t)) t.series = [];
-    if (!Array.isArray(t.series)) t.series = [];
-    t.series.forEach(s => {
-      if (!s.id) s.id = uid('s');
-      s.text = s.text || '';
-      s.rank = Math.max(1, Number(s.rank) || 1);
-      if (!('order' in s) || !Number.isFinite(s.order)) s.order = 0;
-      if (typeof s.completed !== 'boolean') s.completed = !!s.completed;
-      if (!('createdAt' in s)) s.createdAt = nowIso();
-      if (!('completedAt' in s)) s.completedAt = null;
-      if (!('archivedAt' in s)) s.archivedAt = null;
-    });
-    sortSeriesByRankOrder(t);
-    if (t.completed && !t.completedAt) t.completedAt = t.createdAt || nowIso();
-    if (t.completed && !t.completionPointsAwardedAt) {
-      // Legacy migration: treat existing completed tasks as already awarded.
-      t.completionPointsAwardedAt = t.completedAt || nowIso();
-    }
-  });
+  n.tasks.forEach((t) => normalizeTaskNode(t));
   n.children.forEach(normalizeNode);
 }
 
@@ -1152,7 +1290,7 @@ function followUpStatus(task, now = new Date()) {
   return { state: 'upcoming', label: `Follow up ${followUp.toLocaleDateString()}` };
 }
 
-function setTaskCompleted(task, completed, now = new Date()) {
+function setTaskCompleted(task, completed, now = new Date(), opts = {}) {
   const wasCompleted = !!task.completed;
   task.completed = !!completed;
   if (task.completed) {
@@ -1162,30 +1300,83 @@ function setTaskCompleted(task, completed, now = new Date()) {
     task.completedAt = null;
     task.archivedAt = null;
     task.nextRecurringAt = null;
+    task.completionPointsAwardedAt = null;
   }
-  if (!wasCompleted && task.completed && !task.completionPointsAwardedAt) {
+  if (!wasCompleted && task.completed && opts.awardPoints !== false && !task.completionPointsAwardedAt) {
     const awarded = awardPoints(pointsForTaskCompletion(task), now);
     if (awarded > 0) task.completionPointsAwardedAt = now.toISOString();
   }
+  if (opts.cascadeChildren && taskHasChildren(task)) {
+    taskChildList(task).forEach((child) => {
+      setTaskCompleted(child, completed, now, {
+        awardPoints: false,
+        cascadeChildren: true,
+        syncAncestors: false,
+      });
+    });
+  }
+  if (opts.syncAncestors !== false && task?.id) syncTaskAncestorsCompletion(task.id, now);
 }
 
 function setSubtaskCompleted(task, subtask, completed, now = new Date()) {
-  subtask.completed = !!completed;
-  if (subtask.completed) subtask.completedAt = now.toISOString();
-  else {
-    subtask.completedAt = null;
-    subtask.archivedAt = null;
+  if (!subtask) return;
+  setTaskCompleted(subtask, completed, now, { syncAncestors: false });
+  const children = taskHasChildren(task) ? taskChildList(task) : (Array.isArray(task?.series) ? task.series : []);
+  if (!children.length) return;
+  const allDone = children.every((child) => !!child.completed);
+  if (allDone) {
+    setTaskCompleted(task, true, now, { syncAncestors: false });
+  } else {
+    task.completed = false;
+    task.completedAt = null;
+    task.archivedAt = null;
+    task.nextRecurringAt = null;
   }
-  const stats = seriesStats(task);
-  if (!stats) return;
-  if (stats.remaining === 0) {
-    setTaskCompleted(task, true, now);
+  if (store?.data?.threads && subtask?.id) syncTaskAncestorsCompletion(subtask.id, now);
+}
+
+function syncTaskCompletionFromChildren(task, now = new Date(), opts = {}) {
+  const children = taskChildList(task);
+  if (!children.length) {
+    if (opts.reopenWhenEmpty) {
+      task.completed = false;
+      task.completedAt = null;
+      task.archivedAt = null;
+      task.nextRecurringAt = null;
+    }
     return;
   }
+  const allDone = children.every((child) => !!child.completed);
+  if (allDone) {
+    if (!task.completed) setTaskCompleted(task, true, now, { syncAncestors: false });
+    return;
+  }
+  if (!task.completed) return;
   task.completed = false;
   task.completedAt = null;
   task.archivedAt = null;
   task.nextRecurringAt = null;
+}
+
+function syncTaskAncestorsCompletion(taskId, now = new Date()) {
+  if (!store?.data?.threads) return;
+  const ref = findTaskRefById(taskId);
+  if (!ref || !Array.isArray(ref.ancestors)) return;
+  ref.ancestors.slice().reverse().forEach((ancestor) => {
+    syncTaskCompletionFromChildren(ancestor, now);
+  });
+}
+
+function setTaskTreeCompleted(task, completed, now = new Date(), opts = {}) {
+  setTaskCompleted(task, completed, now, {
+    awardPoints: opts.awardRootPoints !== false,
+    cascadeChildren: false,
+    syncAncestors: false,
+  });
+  taskChildList(task).forEach((child) => {
+    setTaskTreeCompleted(child, completed, now, { awardRootPoints: false });
+  });
+  if (task?.id) syncTaskAncestorsCompletion(task.id, now);
 }
 
 function resetTaskForRecurring(task) {
@@ -1194,21 +1385,15 @@ function resetTaskForRecurring(task) {
   task.archivedAt = null;
   task.nextRecurringAt = null;
   task.completionPointsAwardedAt = null;
-  if (isSeriesTask(task)) {
-    task.series.forEach((s) => {
-      s.completed = false;
-      s.completedAt = null;
-      s.archivedAt = null;
-    });
-  }
+  taskChildList(task).forEach((child) => resetTaskForRecurring(child));
 }
 
 function preserveTaskCompletionTracking(task) {
   if (!task || typeof task !== 'object') return;
-  if (!Array.isArray(task.series)) task.series = [];
   if (task.completed && !task.completionPointsAwardedAt) {
     task.completionPointsAwardedAt = task.completedAt || nowIso();
   }
+  taskChildList(task).forEach((child) => preserveTaskCompletionTracking(child));
 }
 
 function moveTaskToThread(sourceNodeId, taskId, targetNodeId) {
@@ -1243,7 +1428,7 @@ function applyArchivingRules(days = 7, now = new Date()) {
   if (!Number.isFinite(n) || n <= 0) return false;
   const cutoff = n * 24 * 60 * 60 * 1000;
   let changed = false;
-  flattenTaskRefs().forEach(({ task }) => {
+  const applyTaskArchive = (task) => {
     if (task.completed && task.completedAt) {
       const age = now.getTime() - new Date(task.completedAt).getTime();
       if (age >= cutoff && !task.archivedAt) { task.archivedAt = now.toISOString(); changed = true; }
@@ -1251,15 +1436,11 @@ function applyArchivingRules(days = 7, now = new Date()) {
       task.archivedAt = null;
       changed = true;
     }
-    (task.series || []).forEach((s) => {
-      if (s.completed && s.completedAt) {
-        const age = now.getTime() - new Date(s.completedAt).getTime();
-        if (age >= cutoff && !s.archivedAt) { s.archivedAt = now.toISOString(); changed = true; }
-      } else if (s.archivedAt) {
-        s.archivedAt = null;
-        changed = true;
-      }
-    });
+    taskChildList(task).forEach(applyTaskArchive);
+  };
+  flattenTaskRefs().forEach(({ task, depth }) => {
+    if (depth > 0) return;
+    applyTaskArchive(task);
   });
   return changed;
 }
@@ -1315,9 +1496,22 @@ function snoozeFollowUp(task, now = new Date()) {
   task.followUpAt = at.toISOString();
 }
 
-function isTaskAvailable(t, now = new Date(), currentContext = null, depMap = null) {
+function sequenceBlockingSibling(ref) {
+  if (!ref?.parentTask || taskChildMode(ref.parentTask) !== 'sequential') return null;
+  const siblings = taskChildList(ref.parentTask);
+  const firstIncomplete = siblings.find((task) => !task.completed);
+  if (!firstIncomplete || firstIncomplete.id === ref.task.id) return null;
+  return firstIncomplete;
+}
+
+function isTaskAvailable(taskOrRef, now = new Date(), currentContext = null, depMap = null) {
+  const ref = taskOrRef?.task ? taskOrRef : (taskOrRef?.id ? findTaskRefById(taskOrRef.id) : null);
+  const t = ref?.task || taskOrRef;
+  if (!t || t.completed) return false;
+  if (t.blocked) return false;
   if (t.waitingOn && t.waitingOn.trim()) return false;
   if (unresolvedDependencyIds(t, depMap).length) return false;
+  if (sequenceBlockingSibling(ref)) return false;
   if (t.availableAt) {
     const at = new Date(t.availableAt);
     if (now < at) return false;
@@ -1328,7 +1522,10 @@ function isTaskAvailable(t, now = new Date(), currentContext = null, depMap = nu
   return true;
 }
 
-function availabilityReason(t, now = new Date(), currentContext = null, depMap = null) {
+function availabilityReason(taskOrRef, now = new Date(), currentContext = null, depMap = null) {
+  const ref = taskOrRef?.task ? taskOrRef : (taskOrRef?.id ? findTaskRefById(taskOrRef.id) : null);
+  const t = ref?.task || taskOrRef;
+  if (t.blocked) return 'Paused';
   const follow = followUpStatus(t, now);
   if (t.waitingOn && t.waitingOn.trim()) {
     if (follow.state === 'overdue' || follow.state === 'today') return `Waiting: ${t.waitingOn.trim()} • ${follow.label}`;
@@ -1343,6 +1540,8 @@ function availabilityReason(t, now = new Date(), currentContext = null, depMap =
     const at = new Date(t.availableAt);
     if (now < at) return `Available ${at.toLocaleString()}`;
   }
+  const blockingSibling = sequenceBlockingSibling(ref);
+  if (blockingSibling) return `Waiting for earlier step: ${blockingSibling.text || 'Previous task'}`;
   if (follow.state === 'overdue' || follow.state === 'today') return follow.label;
   if (Array.isArray(t.contexts) && t.contexts.length) {
     if (!currentContext || !t.contexts.includes(currentContext)) return `Context: ${t.contexts.join(', ')}`;
@@ -1426,10 +1625,13 @@ function taskStatusMeta(task, opts = {}) {
   const now = opts.now || new Date();
   const ctx = opts.currentContext || null;
   const depMap = opts.depMap || null;
+  const ref = opts.ref || null;
   const done = opts.done != null ? !!opts.done : !!task?.completed;
   if (done) return { label: 'Completed', tone: 'done' };
+  if (task?.blocked) return { label: 'Paused', tone: 'blocked' };
   if (task?.waitingOn && String(task.waitingOn).trim()) return { label: 'Blocked', tone: 'blocked' };
   if (unresolvedDependencyIds(task, depMap).length) return { label: 'Blocked', tone: 'blocked' };
+  if (sequenceBlockingSibling(ref || findTaskRefById(task?.id))) return { label: 'Queued', tone: 'scheduled' };
   if (task?.availableAt) {
     const at = parseIsoDate(task.availableAt);
     if (at && now < at) return { label: 'Scheduled', tone: 'scheduled' };
@@ -1580,22 +1782,16 @@ function buildReviewSeriesPanel(task, opts = {}) {
   progress.append(fill);
 
   const list = el('div', { class: 'review-series-list' });
-  const ordered = (task.series || []).slice().sort((a, b) => {
-    const ra = Math.max(1, Number(a.rank) || 1);
-    const rb = Math.max(1, Number(b.rank) || 1);
-    if (ra !== rb) return ra - rb;
-    const oa = Number.isFinite(a.order) ? Number(a.order) : 0;
-    const ob = Number.isFinite(b.order) ? Number(b.order) : 0;
-    return oa - ob;
-  });
-  ordered.forEach((s) => {
-    const rank = Math.max(1, Number(s.rank) || 1);
+  const ordered = taskChildList(task).slice();
+  ordered.forEach((s, idx) => {
+    const rank = idx + 1;
     const cls = `review-series-row${editable ? ' editable' : ''}${s.completed ? ' done' : ''}${!s.completed && rank === stats.activeRank ? ' current' : ''}`;
     const row = el('div', { class: cls });
     if (!editable) {
       row.append(el('span', { class: 'pill step' }, `Step ${rank}`));
       row.append(el('span', { class: 'review-series-text' }, s.text || 'Untitled subtask'));
-      row.append(el('span', { class: 'review-series-state' }, s.completed ? 'Done' : (rank === stats.activeRank ? 'Do Next' : 'Up Next')));
+      const summary = taskHasChildren(s) ? `${taskChildList(s).length} nested` : (s.completed ? 'Done' : (rank === stats.activeRank ? 'Do Next' : 'Up Next'));
+      row.append(el('span', { class: 'review-series-state' }, summary));
       list.append(row);
       return;
     }
@@ -1604,13 +1800,6 @@ function buildReviewSeriesPanel(task, opts = {}) {
     check.checked = !!s.completed;
     check.addEventListener('change', () => {
       if (typeof opts.onToggle === 'function') opts.onToggle(s.id, check.checked);
-    });
-    const rankInput = el('input', { type: 'number', min: '1', class: 'review-series-rank-input', title: 'Step rank' });
-    rankInput.value = String(rank);
-    rankInput.addEventListener('change', () => {
-      const next = Math.max(1, Number(rankInput.value) || 1);
-      rankInput.value = String(next);
-      if (typeof opts.onRankChange === 'function') opts.onRankChange(s.id, next);
     });
     const textInput = el('input', { type: 'text', class: 'review-series-text-input', placeholder: 'Subtask name' });
     textInput.value = s.text || '';
@@ -1622,19 +1811,20 @@ function buildReviewSeriesPanel(task, opts = {}) {
       }
       if (typeof opts.onTextChange === 'function') opts.onTextChange(s.id, next);
     });
-    const state = el('span', { class: 'review-series-state' }, s.completed ? 'Done' : (rank === stats.activeRank ? 'Do Next' : 'Up Next'));
+    const stateLabel = taskHasChildren(s)
+      ? `${taskChildList(s).length} nested`
+      : (s.completed ? 'Done' : (rank === stats.activeRank ? 'Do Next' : 'Up Next'));
+    const state = el('span', { class: 'review-series-state' }, stateLabel);
     const remove = createInlineIconAction('Remove step', () => {
       if (typeof opts.onRemove === 'function') opts.onRemove(s.id);
     }, '✕', 'danger review-series-remove');
-    row.append(check, rankInput, textInput, state, remove);
+    row.append(check, textInput, state, remove);
     list.append(row);
   });
   panel.append(head, progress, list);
   if (editable) {
     const addRow = el('div', { class: 'review-series-add' });
     const addText = el('input', { type: 'text', placeholder: 'Add another step…' });
-    const addRank = el('input', { type: 'number', min: '1', class: 'review-series-rank-input', title: 'Step rank' });
-    addRank.value = String(stats.activeRank || (stats.maxRank + 1));
     const addBtn = el('button', { class: 'btn ghost', type: 'button' }, 'Add');
     const addItem = () => {
       const text = addText.value.trim();
@@ -1642,8 +1832,7 @@ function buildReviewSeriesPanel(task, opts = {}) {
         addText.focus();
         return;
       }
-      const rank = Math.max(1, Number(addRank.value) || 1);
-      if (typeof opts.onAdd === 'function') opts.onAdd(text, rank);
+      if (typeof opts.onAdd === 'function') opts.onAdd(text, ordered.length + 1);
       addText.value = '';
       addText.focus();
     };
@@ -1654,7 +1843,7 @@ function buildReviewSeriesPanel(task, opts = {}) {
         addItem();
       }
     });
-    addRow.append(addText, addRank, addBtn);
+    addRow.append(addText, addBtn);
     panel.append(addRow);
   }
   return panel;
@@ -1706,72 +1895,100 @@ function buildBreakIntoStepsCta(onAddStep) {
   return wrap;
 }
 
-function buildAvailabilityControls(nodeId, taskId, rerender) {
-  const n = findNodeById(store.data.threads, nodeId);
-  const t = (n?.tasks || []).find(x => x.id === taskId);
-  const avail = el('div', { class: 'availability' });
-  if (!n || !t) return avail;
-  function updateTask(updater) {
-    const live = findNodeById(store.data.threads, nodeId);
-    const ti = live?.tasks?.findIndex(x => x.id === taskId) ?? -1;
-    if (ti < 0) return;
-    updater(live.tasks[ti]);
-    store.saveNow(); rerender && rerender();
+function taskHasPauseState(task, depMap = null) {
+  if (!task) return false;
+  if (task.blocked) return true;
+  if (task.waitingOn && task.waitingOn.trim()) return true;
+  return unresolvedDependencyIds(task, depMap).length > 0;
+}
+
+function mutateTaskAndRefresh(taskId, updater, rerender, opts = {}) {
+  const ref = findTaskRefById(taskId);
+  if (!ref || typeof updater !== 'function') return false;
+  updater(ref.task, ref);
+  store.saveNow();
+  if (opts.renderThreads) renderThreads();
+  if (!$('#review-stage').hidden) {
+    renderProgress();
+    renderStoryCard();
   }
-  // Available From
-  const row1 = el('div', { class: 'row' });
-  row1.append(el('div', { class: 'subtext' }, 'Available from'));
+  if (typeof rerender === 'function') rerender();
+  return true;
+}
+
+function buildAvailabilityControls(nodeId, taskId, rerender) {
+  const ref = findTaskRefById(taskId);
+  const t = ref?.task;
+  const avail = el('div', { class: 'availability task-details-panel' });
+  if (!ref || !t) return avail;
+
+  const updateTask = (updater, opts = {}) => mutateTaskAndRefresh(taskId, updater, rerender, { renderThreads: !!opts.renderThreads });
+  const buildRow = (label) => {
+    const row = el('div', { class: 'row' });
+    row.append(el('div', { class: 'subtext' }, label));
+    return row;
+  };
+  const currentView = $('#view-tasks') && !$('#view-tasks').hidden
+    ? 'tasks'
+    : ($('#view-review') && !$('#view-review').hidden ? 'review' : 'prepare');
+
+  const topRow = buildRow('Details');
+  const topControls = el('div', { class: 'task-panel-inline-row' });
+  const pri = el('select', { class: 'select-sm' });
+  for (let i = 1; i <= 5; i++) pri.append(el('option', { value: String(i) }, `Priority ${i}`));
+  pri.value = String(t.priority || 3);
+  pri.addEventListener('change', () => updateTask((task) => { task.priority = Number(pri.value); }, { renderThreads: true }));
+  topControls.append(pri);
+  if (taskHasChildren(t)) {
+    const mode = el('select', { class: 'select-sm' });
+    mode.append(el('option', { value: 'parallel' }, 'Parallel children'));
+    mode.append(el('option', { value: 'sequential' }, 'Sequential children'));
+    mode.value = taskChildMode(t);
+    mode.addEventListener('change', () => updateTask((task) => { task.childMode = mode.value; }));
+    topControls.append(mode);
+  }
+  if (!ref.parentTask) {
+    const threadSel = buildTaskThreadSelect(ref.node.id, t, currentView, () => {
+      renderThreads();
+      if (!$('#view-review').hidden) onReviewVisibility();
+      if (!$('#view-tasks').hidden) renderTasksPane();
+    });
+    topControls.append(threadSel);
+  }
+  topRow.append(topControls);
+  avail.append(topRow);
+
+  const row1 = buildRow('Available from');
   const dt = el('input', { type: 'datetime-local' });
   dt.value = toLocalInputValue(t.availableAt);
-  dt.addEventListener('change', () => {
-    updateTask(task => { task.availableAt = parseLocalDateTime(dt.value); });
-  });
+  dt.addEventListener('change', () => updateTask((task) => { task.availableAt = parseLocalDateTime(dt.value); }));
   const clear1 = el('button', { class: 'btn ghost' }, 'Clear');
-  clear1.addEventListener('click', () => { dt.value = ''; updateTask(task => { task.availableAt = null; }); });
+  clear1.addEventListener('click', () => {
+    dt.value = '';
+    updateTask((task) => { task.availableAt = null; });
+  });
   row1.append(dt, clear1);
   avail.append(row1);
 
-  // Due date
-  const rowDue = el('div', { class: 'row' });
-  rowDue.append(el('div', { class: 'subtext' }, 'Due'));
+  const rowDue = buildRow('Due');
   const dueInput = el('input', { type: 'datetime-local' });
   dueInput.value = toLocalInputValue(t.dueAt);
-  dueInput.addEventListener('change', () => {
-    updateTask(task => { task.dueAt = parseLocalDateTime(dueInput.value); });
-  });
+  dueInput.addEventListener('change', () => updateTask((task) => { task.dueAt = parseLocalDateTime(dueInput.value); }));
   const clearDue = el('button', { class: 'btn ghost' }, 'Clear');
   clearDue.addEventListener('click', () => {
     dueInput.value = '';
-    updateTask(task => { task.dueAt = null; });
+    updateTask((task) => { task.dueAt = null; });
   });
   rowDue.append(dueInput, clearDue);
   avail.append(rowDue);
 
-  // Follow-up date
-  const rowFollow = el('div', { class: 'row' });
-  rowFollow.append(el('div', { class: 'subtext' }, 'Follow up on'));
-  const followInput = el('input', { type: 'datetime-local' });
-  followInput.value = toLocalInputValue(t.followUpAt);
-  followInput.addEventListener('change', () => {
-    updateTask(task => { task.followUpAt = parseLocalDateTime(followInput.value); });
-  });
-  const clearFollow = el('button', { class: 'btn ghost' }, 'Clear');
-  clearFollow.addEventListener('click', () => {
-    followInput.value = '';
-    updateTask(task => { task.followUpAt = null; });
-  });
-  rowFollow.append(followInput, clearFollow);
-  avail.append(rowFollow);
-
-  // Contexts
-  const row2 = el('div', { class: 'row' });
-  row2.append(el('div', { class: 'subtext' }, 'Contexts'));
+  const row2 = buildRow('Contexts');
   const ctxStack = el('div', { class: 'stack' });
   const chipWrap = el('div', { class: 'chiplist' });
   (t.contexts || []).forEach((c) => {
     const ch = el('span', { class: 'chip' }, [c, el('button', {}, '✕')]);
     ch.querySelector('button').addEventListener('click', () => {
-      updateTask(task => { task.contexts = (task.contexts || []).filter(x => x !== c); });
+      updateTask((task) => { task.contexts = (task.contexts || []).filter((x) => x !== c); });
     });
     chipWrap.append(ch);
   });
@@ -1779,9 +1996,10 @@ function buildAvailabilityControls(nodeId, taskId, rerender) {
   const ctxInput = el('input', { type: 'text', placeholder: 'Add context…' });
   const addCtx = el('button', { class: 'btn ghost' }, 'Add');
   addCtx.addEventListener('click', () => {
-    const v = ctxInput.value.trim(); if (!v) return;
-    updateTask(task => {
-      const arr = task.contexts || [];
+    const v = ctxInput.value.trim();
+    if (!v) return;
+    updateTask((task) => {
+      const arr = Array.isArray(task.contexts) ? task.contexts.slice() : [];
       if (!arr.includes(v)) arr.push(v);
       task.contexts = arr;
     });
@@ -1795,23 +2013,21 @@ function buildAvailabilityControls(nodeId, taskId, rerender) {
   row2.append(ctxStack, el('div'));
   avail.append(row2);
 
-  // Locations (tags)
-  const rowLoc = el('div', { class: 'row' });
-  rowLoc.append(el('div', { class: 'subtext' }, 'Locations'));
+  const rowLoc = buildRow('Locations');
   const locStack = el('div', { class: 'stack' });
   const locChips = el('div', { class: 'chiplist' });
   const locOptions = uniqTags([].concat(LOCATION_PRESETS, taskLocations(t)));
   locOptions.forEach((loc) => {
-    const active = taskLocations(t).some(x => x.toLowerCase() === loc.toLowerCase());
+    const active = taskLocations(t).some((x) => x.toLowerCase() === loc.toLowerCase());
     const btn = el('button', { class: `chip toggle${active ? ' active' : ''}` }, loc);
     btn.addEventListener('click', () => {
-      updateTask(task => {
+      updateTask((task) => {
         const list = taskLocations(task);
-        const idx = list.findIndex(x => x.toLowerCase() === loc.toLowerCase());
+        const idx = list.findIndex((x) => x.toLowerCase() === loc.toLowerCase());
         if (idx >= 0) list.splice(idx, 1);
         else list.push(loc);
         setTaskLocations(task, list);
-      });
+      }, { renderThreads: true });
     });
     locChips.append(btn);
   });
@@ -1819,12 +2035,13 @@ function buildAvailabilityControls(nodeId, taskId, rerender) {
   const locInput = el('input', { type: 'text', placeholder: 'Add location…' });
   const addLoc = el('button', { class: 'btn ghost' }, 'Add');
   addLoc.addEventListener('click', () => {
-    const v = locInput.value.trim(); if (!v) return;
-    updateTask(task => {
+    const v = locInput.value.trim();
+    if (!v) return;
+    updateTask((task) => {
       const list = taskLocations(task);
       list.push(v);
       setTaskLocations(task, list);
-    });
+    }, { renderThreads: true });
     locInput.value = '';
   });
   locInput.addEventListener('keydown', (e) => {
@@ -1833,13 +2050,11 @@ function buildAvailabilityControls(nodeId, taskId, rerender) {
   locAddRow.append(locInput, addLoc);
   locStack.append(locChips, locAddRow);
   const clearLoc = el('button', { class: 'btn ghost' }, 'Clear');
-  clearLoc.addEventListener('click', () => { updateTask(task => { setTaskLocations(task, []); }); });
+  clearLoc.addEventListener('click', () => updateTask((task) => { setTaskLocations(task, []); }, { renderThreads: true }));
   rowLoc.append(locStack, clearLoc);
   avail.append(rowLoc);
 
-  // Time estimate
-  const rowTime = el('div', { class: 'row' });
-  rowTime.append(el('div', { class: 'subtext' }, 'Time'));
+  const rowTime = buildRow('Time');
   const timeStack = el('div', { class: 'stack' });
   const timeChips = el('div', { class: 'chiplist' });
   const current = taskDurationMins(t);
@@ -1848,7 +2063,7 @@ function buildAvailabilityControls(nodeId, taskId, rerender) {
     const active = current === mins;
     const btn = el('button', { class: `chip toggle${active ? ' active' : ''}` }, formatDuration(mins) || `${mins}m`);
     btn.addEventListener('click', () => {
-      updateTask(task => {
+      updateTask((task) => {
         const cur = taskDurationMins(task);
         task.duration = cur === mins ? null : mins;
       });
@@ -1861,7 +2076,7 @@ function buildAvailabilityControls(nodeId, taskId, rerender) {
   timeSet.addEventListener('click', () => {
     const v = normalizeDurationValue(timeInput.value);
     if (!v) return;
-    updateTask(task => { task.duration = v; });
+    updateTask((task) => { task.duration = v; });
     timeInput.value = '';
   });
   timeInput.addEventListener('keydown', (e) => {
@@ -1870,20 +2085,18 @@ function buildAvailabilityControls(nodeId, taskId, rerender) {
   timeAddRow.append(timeInput, timeSet);
   timeStack.append(timeChips, timeAddRow);
   const clearTime = el('button', { class: 'btn ghost' }, 'Clear');
-  clearTime.addEventListener('click', () => { updateTask(task => { task.duration = null; }); });
+  clearTime.addEventListener('click', () => updateTask((task) => { task.duration = null; }));
   rowTime.append(timeStack, clearTime);
   avail.append(rowTime);
 
-  // Recurrence
-  const rowRecur = el('div', { class: 'row' });
-  rowRecur.append(el('div', { class: 'subtext' }, 'Repeat'));
+  const rowRecur = buildRow('Repeat');
   const recurSel = el('select', { class: 'select-sm' });
   [['none', 'No repeat'], ['daily', 'Daily'], ['weekly', 'Weekly'], ['monthly', 'Monthly']].forEach(([v, label]) => {
     recurSel.append(el('option', { value: v }, label));
   });
   recurSel.value = t.recurrence || 'none';
   recurSel.addEventListener('change', () => {
-    updateTask(task => {
+    updateTask((task) => {
       task.recurrence = recurSel.value;
       if (task.recurrence === 'none') task.nextRecurringAt = null;
       else if (task.completed && !task.nextRecurringAt) task.nextRecurringAt = nextRecurringAt(task.recurrence);
@@ -1893,35 +2106,98 @@ function buildAvailabilityControls(nodeId, taskId, rerender) {
   rowRecur.append(recurSel, recurMeta);
   avail.append(rowRecur);
 
-  // Dependencies
-  const rowDeps = el('div', { class: 'row' });
-  rowDeps.append(el('div', { class: 'subtext' }, 'Blocked by'));
+  if (taskHasChildren(t)) {
+    const rowStructure = buildRow('Breakdown');
+    const stats = seriesStats(t);
+    const note = el('div', { class: 'subtext' }, `${stats?.done || 0}/${stats?.total || 0} complete • ${taskChildMode(t) === 'sequential' ? 'Sequential' : 'Parallel'} children`);
+    const openTasks = el('button', { class: 'btn ghost' }, 'Open in Tasks');
+    openTasks.addEventListener('click', () => {
+      switchView('tasks');
+      tasksViewState.focusTaskId = taskId;
+      saveTasksViewState();
+      renderTasksPane();
+    });
+    rowStructure.append(note, openTasks);
+    avail.append(rowStructure);
+  }
+
+  return avail;
+}
+
+function buildPauseControls(taskId, rerender) {
+  const ref = findTaskRefById(taskId);
+  const t = ref?.task;
+  const panel = el('div', { class: 'availability task-pause-panel' });
+  if (!ref || !t) return panel;
+
+  const updateTask = (updater) => mutateTaskAndRefresh(taskId, updater, rerender, { renderThreads: true });
+  const buildRow = (label) => {
+    const row = el('div', { class: 'row' });
+    row.append(el('div', { class: 'subtext' }, label));
+    return row;
+  };
+
+  const rowBlocked = buildRow('Pause task');
+  const blockedLabel = el('label', { class: 'filter-toggle' });
+  const blockedInput = el('input', { type: 'checkbox' });
+  blockedInput.checked = !!t.blocked;
+  blockedInput.addEventListener('change', () => updateTask((task) => { task.blocked = blockedInput.checked; }));
+  blockedLabel.append(blockedInput, document.createTextNode(' Paused'));
+  rowBlocked.append(blockedLabel);
+  panel.append(rowBlocked);
+
+  const rowWait = buildRow('Waiting on');
+  const waitInput = el('input', { type: 'text', placeholder: 'Name or reason…' });
+  waitInput.value = t.waitingOn || '';
+  waitInput.addEventListener('change', () => updateTask((task) => { task.waitingOn = waitInput.value.trim(); }));
+  const clearWait = el('button', { class: 'btn ghost' }, 'Clear');
+  clearWait.addEventListener('click', () => {
+    waitInput.value = '';
+    updateTask((task) => { task.waitingOn = ''; });
+  });
+  rowWait.append(waitInput, clearWait);
+  panel.append(rowWait);
+
+  const rowFollow = buildRow('Follow up on');
+  const followInput = el('input', { type: 'datetime-local' });
+  followInput.value = toLocalInputValue(t.followUpAt);
+  followInput.addEventListener('change', () => updateTask((task) => { task.followUpAt = parseLocalDateTime(followInput.value); }));
+  const clearFollow = el('button', { class: 'btn ghost' }, 'Clear');
+  clearFollow.addEventListener('click', () => {
+    followInput.value = '';
+    updateTask((task) => { task.followUpAt = null; });
+  });
+  rowFollow.append(followInput, clearFollow);
+  panel.append(rowFollow);
+
+  const rowDeps = buildRow('Blocked by');
   const depStack = el('div', { class: 'stack' });
   const depChips = el('div', { class: 'chiplist' });
-  const allRefs = flattenTaskRefs().filter(r => r.task.id !== taskId);
-  const byId = new Map(allRefs.map(r => [r.task.id, r]));
+  const allRefs = flattenTaskRefs().filter((entry) => entry.task.id !== taskId);
+  const byId = new Map(allRefs.map((entry) => [entry.task.id, entry]));
   (t.blockedBy || []).forEach((depId) => {
     const depRef = byId.get(depId);
     if (!depRef) return;
-    const chip = el('span', { class: 'chip' }, [`${depRef.task.text}`, el('button', {}, '✕')]);
+    const label = depRef.task.text || 'Dependency';
+    const chip = el('span', { class: 'chip' }, [label, el('button', {}, '✕')]);
     chip.querySelector('button').addEventListener('click', () => {
-      updateTask(task => { task.blockedBy = (task.blockedBy || []).filter(id => id !== depId); });
+      updateTask((task) => { task.blockedBy = (task.blockedBy || []).filter((id) => id !== depId); });
     });
     depChips.append(chip);
   });
   const depAddRow = el('div', { class: 'mini-add' });
   const depSel = el('select', { class: 'select-sm' });
   depSel.append(el('option', { value: '' }, 'Add dependency...'));
-  allRefs.forEach((r) => {
-    const label = `${r.task.text} (${nodePath(r.node)})`;
-    depSel.append(el('option', { value: r.task.id }, label));
+  allRefs.forEach((entry) => {
+    const label = `${entry.task.text || 'Task'} (${taskRefPath(entry)})`;
+    depSel.append(el('option', { value: entry.task.id }, label));
   });
   const depAdd = el('button', { class: 'btn ghost' }, 'Add');
   depAdd.addEventListener('click', () => {
     const depId = depSel.value;
     if (!depId) return;
-    updateTask(task => {
-      const arr = task.blockedBy || [];
+    updateTask((task) => {
+      const arr = Array.isArray(task.blockedBy) ? task.blockedBy.slice() : [];
       if (!arr.includes(depId)) arr.push(depId);
       task.blockedBy = arr;
     });
@@ -1930,220 +2206,25 @@ function buildAvailabilityControls(nodeId, taskId, rerender) {
   depAddRow.append(depSel, depAdd);
   depStack.append(depChips, depAddRow);
   rowDeps.append(depStack, el('div'));
-  avail.append(rowDeps);
+  panel.append(rowDeps);
 
-  // Snooze
-  const rowSnooze = el('div', { class: 'row' });
-  rowSnooze.append(el('div', { class: 'subtext' }, 'Snooze'));
+  const rowSnooze = buildRow('Pause until');
   const snoozeRow = el('div', { class: 'chiplist' });
   const mkSnoozeBtn = (label, mode) => {
     const btn = el('button', { class: 'chip toggle' }, label);
     btn.addEventListener('click', () => {
-      updateTask(task => { snoozeTask(task, mode); });
+      updateTask((task) => { snoozeTask(task, mode); });
       showToast(`Snoozed to ${label.toLowerCase()}`);
     });
     return btn;
   };
   snoozeRow.append(mkSnoozeBtn('Later today', 'later'), mkSnoozeBtn('Tomorrow', 'tomorrow'), mkSnoozeBtn('Next week', 'next-week'));
   const clearSnooze = el('button', { class: 'btn ghost' }, 'Clear');
-  clearSnooze.addEventListener('click', () => { updateTask(task => { task.availableAt = null; }); });
+  clearSnooze.addEventListener('click', () => updateTask((task) => { task.availableAt = null; }));
   rowSnooze.append(snoozeRow, clearSnooze);
-  avail.append(rowSnooze);
+  panel.append(rowSnooze);
 
-  // Series
-  const rowSeries = el('div', { class: 'row' });
-  rowSeries.append(el('div', { class: 'subtext' }, 'Series'));
-  const seriesEditor = el('div', { class: 'series-editor' });
-  const stats = seriesStats(t);
-  const total = stats?.total || 0;
-  const done = stats?.done || 0;
-  const maxRank = stats?.maxRank || 0;
-  const activeRank = stats?.activeRank || null;
-
-  const seriesHeader = el('div', { class: 'series-header' });
-  const summary = el('div', { class: 'series-summary' });
-  if (!total) {
-    summary.append(el('span', { class: 'subtext' }, 'No subtasks yet.'));
-  } else {
-    summary.append(el('span', { class: 'series-badge' }, `Series ${done}/${total}`));
-    summary.append(el('span', { class: 'subtext' }, activeRank ? `Step ${activeRank}/${maxRank}` : `Step 0/${maxRank}`));
-  }
-  const progress = el('div', { class: 'series-progress' });
-  const fill = el('div', { class: 'fill' });
-  const pct = total ? Math.round((done / total) * 100) : 0;
-  fill.style.width = `${pct}%`;
-  progress.append(fill);
-  seriesHeader.append(summary, progress);
-
-  const seriesList = el('div', { class: 'series-list' });
-  const seriesItems = (t.series || []).slice().sort((a, b) => {
-    const ra = Math.max(1, Number(a.rank) || 1);
-    const rb = Math.max(1, Number(b.rank) || 1);
-    if (ra !== rb) return ra - rb;
-    const oa = Number.isFinite(a.order) ? Number(a.order) : 0;
-    const ob = Number.isFinite(b.order) ? Number(b.order) : 0;
-    if (oa !== ob) return oa - ob;
-    return (a.text || '').localeCompare(b.text || '');
-  });
-  if (!seriesItems.length) {
-    seriesList.append(el('div', { class: 'series-empty' }, 'Add your first step below.'));
-  } else {
-    const groups = new Map();
-    seriesItems.forEach((s) => {
-      const r = Math.max(1, Number(s.rank) || 1);
-      if (!groups.has(r)) groups.set(r, []);
-      groups.get(r).push(s);
-    });
-    const ranks = Array.from(groups.keys()).sort((a, b) => a - b);
-    ranks.forEach((r) => {
-      const items = groups.get(r) || [];
-      const doneCount = items.filter(s => s.completed).length;
-      const allDone = doneCount === items.length;
-      const group = el('div', { class: `series-group${allDone ? ' done' : ''}${activeRank === r ? ' current' : ''}` });
-      const header = el('div', { class: 'series-group-header' });
-      header.append(el('span', { class: 'series-step-pill' }, `Step ${r}`));
-      header.append(el('span', { class: 'series-group-meta' }, `${doneCount}/${items.length} done`));
-      const list = el('div', { class: 'series-group-list' });
-      items.forEach((s) => {
-        const row = el('div', { class: 'series-item' + (s.completed ? ' completed' : '') });
-        const drag = el('button', { class: 'drag-handle', title: 'Drag to reorder', draggable: 'true', type: 'button' }, '⋮⋮');
-        drag.addEventListener('dragstart', (e) => {
-          setDragState({
-            kind: 'subtask',
-            sourceNodeId: nodeId,
-            sourceTaskId: taskId,
-            sourceSubtaskId: s.id,
-            sourceParentId: taskId,
-          });
-          row.classList.add('dragging');
-          try {
-            e.dataTransfer.effectAllowed = 'move';
-            e.dataTransfer.setData('text/plain', `subtask:${s.id}`);
-          } catch {}
-        });
-        drag.addEventListener('dragend', clearDragState);
-        row.addEventListener('dragover', (e) => {
-          if (dragState.kind !== 'subtask') return;
-          if (!dragState.sourceSubtaskId || dragState.sourceSubtaskId === s.id) return;
-          if (dragState.sourceParentId !== taskId) return;
-          e.preventDefault();
-          const after = isDropAfterPointer(e, row);
-          clearDropIndicators();
-          row.classList.add('drop-target');
-          row.classList.toggle('drop-after', after);
-        });
-        row.addEventListener('drop', (e) => {
-          if (dragState.kind !== 'subtask') return;
-          if (!dragState.sourceSubtaskId || dragState.sourceSubtaskId === s.id) return;
-          if (dragState.sourceParentId !== taskId) return;
-          e.preventDefault();
-          const placeAfter = row.classList.contains('drop-after');
-          const moved = moveSubtaskRelative(nodeId, taskId, dragState.sourceSubtaskId, s.id, placeAfter);
-          clearDragState();
-          if (!moved) return;
-          store.saveNow();
-          rerender && rerender();
-          showToast('Subtask order updated');
-        });
-        const cb = el('input', { type: 'checkbox' });
-        cb.checked = !!s.completed;
-        cb.addEventListener('change', () => {
-          updateTask(task => {
-            const sub = (task.series || []).find(x => x.id === s.id);
-            if (sub) setSubtaskCompleted(task, sub, cb.checked);
-          });
-        });
-        const rankInput = el('input', { type: 'number', min: '1', class: 'series-rank' });
-        rankInput.value = String(Math.max(1, Number(s.rank) || 1));
-        rankInput.addEventListener('change', () => {
-          updateTask(task => {
-            const sub = (task.series || []).find(x => x.id === s.id);
-            if (sub) sub.rank = Math.max(1, Number(rankInput.value) || 1);
-            sortSeriesByRankOrder(task);
-          });
-        });
-        const textInput = el('input', { type: 'text', class: 'series-text' });
-        textInput.value = s.text || '';
-        textInput.addEventListener('change', () => {
-          updateTask(task => {
-            const sub = (task.series || []).find(x => x.id === s.id);
-            if (sub) sub.text = textInput.value.trim() || sub.text;
-          });
-        });
-        const del = el('button', { class: 'btn ghost' }, 'Remove');
-        del.addEventListener('click', () => {
-          updateTask(task => {
-            task.series = (task.series || []).filter(x => x.id !== s.id);
-            sortSeriesByRankOrder(task);
-          });
-        });
-        row.append(drag, cb, rankInput, textInput, del);
-        list.append(row);
-      });
-      group.append(header, list);
-      seriesList.append(group);
-    });
-  }
-
-  const seriesAdd = el('div', { class: 'series-add' });
-  const addText = el('input', { type: 'text', placeholder: 'Add subtask…' });
-  const ranksExisting = Array.from(new Set((t.series || []).map(s => Math.max(1, Number(s.rank) || 1))));
-  const nextRank = ranksExisting.length ? Math.max(...ranksExisting) + 1 : 1;
-  const addRank = el('input', { type: 'number', min: '1', class: 'series-rank' });
-  addRank.value = String(nextRank);
-  const addBtn = el('button', { class: 'btn ghost' }, 'Add');
-  const addSeriesItem = () => {
-    const txt = addText.value.trim(); if (!txt) return;
-    const rank = Math.max(1, Number(addRank.value) || 1);
-    updateTask(task => {
-      addSubtaskToTask(task, txt, rank);
-    });
-    addText.value = '';
-    addRank.value = String(rank);
-  };
-  addBtn.addEventListener('click', addSeriesItem);
-  addText.addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); addSeriesItem(); } });
-  seriesAdd.append(addText, addRank, addBtn);
-
-  const rankChips = el('div', { class: 'rank-chips' });
-  let rankOptions = ranksExisting.slice(0, 6);
-  if (!rankOptions.includes(nextRank)) rankOptions.push(nextRank);
-  rankOptions = Array.from(new Set(rankOptions)).sort((a, b) => a - b);
-  const updateRankChipActive = () => {
-    const cur = Math.max(1, Number(addRank.value) || 1);
-    Array.from(rankChips.children).forEach((btn) => {
-      const v = Number(btn.getAttribute('data-rank'));
-      btn.classList.toggle('active', v === cur);
-    });
-  };
-  rankOptions.forEach((r) => {
-    const btn = el('button', { class: 'chip toggle', 'data-rank': String(r) }, `Step ${r}`);
-    btn.addEventListener('click', () => {
-      addRank.value = String(r);
-      updateRankChipActive();
-    });
-    rankChips.append(btn);
-  });
-  addRank.addEventListener('input', updateRankChipActive);
-  updateRankChipActive();
-
-  const seriesNote = el('div', { class: 'series-note' }, 'Steps unlock in rank order. All tasks in a rank must be done to reveal the next rank. Tags apply to the whole series.');
-  seriesEditor.append(seriesHeader, seriesList, seriesAdd, rankChips, seriesNote);
-  rowSeries.append(seriesEditor, el('div'));
-  avail.append(rowSeries);
-
-  // Waiting on
-  const row3 = el('div', { class: 'row' });
-  row3.append(el('div', { class: 'subtext' }, 'Waiting on'));
-  const waitInput = el('input', { type: 'text', placeholder: 'Name or reason…' });
-  waitInput.value = t.waitingOn || '';
-  waitInput.addEventListener('change', () => { updateTask(task => { task.waitingOn = waitInput.value.trim(); }); });
-  const clearWait = el('button', { class: 'btn ghost' }, 'Clear');
-  clearWait.addEventListener('click', () => { updateTask(task => { task.waitingOn = ''; }); });
-  row3.append(waitInput, clearWait);
-  avail.append(row3);
-
-  return avail;
+  return panel;
 }
 
 // ------------------------------
@@ -2809,8 +2890,12 @@ function renderStoryCard() {
     const cb = el('input', { type: 'checkbox' });
     cb.checked = !!done;
     if (isSeries) {
-      cb.disabled = true;
-      cb.title = done ? 'Series complete' : 'Complete subtasks to finish series';
+      cb.title = done ? 'Mark project open' : 'Mark task tree done';
+      cb.addEventListener('change', () => {
+        mutateReviewTask((liveTask) => {
+          setTaskTreeCompleted(liveTask, cb.checked);
+        }, { renderThreads: true });
+      });
     } else {
       cb.addEventListener('change', () => {
         mutateReviewTask((liveTask) => {
@@ -2889,21 +2974,21 @@ function renderStoryCard() {
         editable: true,
         onToggle: (subtaskId, completed) => {
           mutateReviewTask((liveTask) => {
-            const subtask = (liveTask.series || []).find((s) => s.id === subtaskId);
+            const subtask = taskChildList(liveTask).find((s) => s.id === subtaskId);
             if (!subtask) return;
             setSubtaskCompleted(liveTask, subtask, completed);
           }, { renderThreads: true });
         },
         onTextChange: (subtaskId, text) => {
           mutateReviewTask((liveTask) => {
-            const subtask = (liveTask.series || []).find((s) => s.id === subtaskId);
+            const subtask = taskChildList(liveTask).find((s) => s.id === subtaskId);
             if (!subtask) return;
             subtask.text = text;
           }, { renderThreads: true });
         },
         onRankChange: (subtaskId, rank) => {
           mutateReviewTask((liveTask) => {
-            const subtask = (liveTask.series || []).find((s) => s.id === subtaskId);
+            const subtask = taskChildList(liveTask).find((s) => s.id === subtaskId);
             if (!subtask) return;
             subtask.rank = Math.max(1, Number(rank) || 1);
             sortSeriesByRankOrder(liveTask);
@@ -2911,8 +2996,8 @@ function renderStoryCard() {
         },
         onRemove: (subtaskId) => {
           mutateReviewTask((liveTask) => {
-            liveTask.series = (liveTask.series || []).filter((s) => s.id !== subtaskId);
-            if (!liveTask.series.length) {
+            liveTask.children = taskChildList(liveTask).filter((s) => s.id !== subtaskId);
+            if (!liveTask.children.length) {
               liveTask.completed = false;
               liveTask.completedAt = null;
             } else {
@@ -3392,18 +3477,49 @@ function onReviewVisibility() {
 function flattenTaskRefs() {
   const out = [];
   const roots = store.data.threads || [];
+  const walkTasks = (node, tasks, parentTask = null, depth = 0, rootTask = null, ancestors = []) => {
+    const list = Array.isArray(tasks) ? tasks : [];
+    list.forEach((task, index) => {
+      const nextRootTask = rootTask || task;
+      const ref = {
+        node,
+        index,
+        task,
+        root: rootOf(node),
+        depth,
+        parentTask,
+        rootTask: nextRootTask,
+        ancestors: ancestors.slice(),
+      };
+      out.push(ref);
+      if (taskHasChildren(task)) {
+        walkTasks(node, taskChildList(task), task, depth + 1, nextRootTask, ancestors.concat(task));
+      }
+    });
+  };
   const walk = (list) => {
     for (const n of list) {
       if (!isNodePathEnabled(n)) { if (n.children?.length) walk(n.children); continue; }
-      for (let i = 0; i < (n.tasks || []).length; i++) {
-        const t = n.tasks[i];
-        out.push({ node: n, index: i, task: t, root: rootOf(n) });
-      }
+      walkTasks(n, n.tasks || []);
       if (n.children?.length) walk(n.children);
     }
   };
   walk(roots);
   return out;
+}
+
+function taskRefPath(ref, opts = {}) {
+  if (!ref) return '';
+  const divider = opts.divider || ' › ';
+  const parts = [];
+  const threadPath = nodePath(ref.node);
+  if (threadPath) parts.push(threadPath);
+  if (opts.includeAncestors !== false) {
+    (ref.ancestors || []).forEach((task) => {
+      if (task?.text) parts.push(task.text);
+    });
+  }
+  return parts.join(divider);
 }
 
 function nodePath(n) {
@@ -3435,7 +3551,7 @@ function nodeInScope(node, scopeId) {
 function buildTaskThreadSelect(sourceNodeId, task, viewName, onMove) {
   const currentNode = findNodeById(store.data.threads || [], sourceNodeId);
   const sel = el('select', { class: 'select-sm task-thread-select', title: 'Move task to thread' });
-  const threads = allThreadNodes();
+  const threads = allThreadNodes().filter(isNodePathEnabled);
   threads.forEach((threadNode) => {
     const optionLabel = nodePath(threadNode);
     sel.append(el('option', { value: threadNode.id }, optionLabel));
@@ -3539,25 +3655,7 @@ function refreshQuickCaptureTagOptions() {
 }
 
 function flattenTaskEntries() {
-  const out = [];
-  const refs = flattenTaskRefs();
-  refs.forEach((ref) => {
-    const t = ref.task;
-    if (isSeriesTask(t)) {
-      const stats = seriesStats(t);
-      if (stats?.remaining === 0) {
-        out.push({ kind: 'series', series: stats, ...ref });
-        return;
-      }
-      const active = stats?.activeItems || [];
-      active.forEach((s) => {
-        out.push({ kind: 'subtask', subtask: s, series: stats, ...ref });
-      });
-    } else {
-      out.push({ kind: 'task', ...ref });
-    }
-  });
-  return out;
+  return flattenTaskRefs().map((ref) => ({ kind: 'task', ...ref }));
 }
 
 // ------------------------------
@@ -3764,6 +3862,8 @@ let recentProjectCompletion = null;
 let recentProjectCompletionTimer = null;
 let tasksStickyVisibilityCleanup = null;
 const stickyDoneTaskAnchors = new Map();
+const collapsedTaskTrees = new Set();
+let taskComposerState = null;
 
 function triggerProjectCompletionCue(task) {
   if (!task || !task.id) return;
@@ -3816,9 +3916,7 @@ function loadTasksViewState() {
 }
 
 function entryKey(ref) {
-  if (ref.kind === 'subtask') return `subtask:${ref.task.id}:${ref.subtask.id}`;
-  if (ref.kind === 'series' || ref.kind === 'series-flow') return `series:${ref.task.id}`;
-  return `task:${ref.task.id}`;
+  return String(ref?.task?.id || '');
 }
 
 function applyStickyTaskPlacement(entries) {
@@ -3929,13 +4027,25 @@ function searchIndex(query) {
     (n.questions || []).forEach((qu) => {
       if ((qu.text || '').toLowerCase().includes(q)) out.push({ kind: 'question', id: n.id, title: qu.text, meta: path });
     });
-    (n.tasks || []).forEach((t) => {
-      const hay = [t.text, path, (t.contexts || []).join(' '), taskLocations(t).join(' ')].join(' ').toLowerCase();
-      if (hay.includes(q)) out.push({ kind: 'task', id: t.id, nodeId: n.id, title: t.text, meta: path });
-      (t.series || []).forEach((s) => {
-        const shay = `${s.text} ${t.text} ${path}`.toLowerCase();
-        if (shay.includes(q)) out.push({ kind: 'subtask', id: s.id, taskId: t.id, nodeId: n.id, title: s.text, meta: `${path} • ${t.text}` });
-      });
+  });
+  flattenTaskRefs().forEach((ref) => {
+    const parentTrail = (ref.ancestors || []).map((task) => task.text).filter(Boolean);
+    const hay = [
+      ref.task.text,
+      taskRefPath(ref),
+      parentTrail.join(' '),
+      (ref.task.contexts || []).join(' '),
+      taskLocations(ref.task).join(' '),
+    ].join(' ').toLowerCase();
+    if (!hay.includes(q)) return;
+    const metaParts = [taskRefPath(ref)];
+    if (ref.depth > 0 && parentTrail.length) metaParts.push(parentTrail[parentTrail.length - 1]);
+    out.push({
+      kind: 'task',
+      id: ref.task.id,
+      nodeId: ref.node.id,
+      title: ref.task.text,
+      meta: metaParts.filter(Boolean).join(' • '),
     });
   });
   return out.slice(0, 40);
@@ -3959,13 +4069,40 @@ function renderSearchResults(query) {
     btn.addEventListener('click', () => {
       if (r.kind === 'thread' || r.kind === 'question') {
         switchView('prepare');
-        const row = document.querySelector(`.node[data-id="${r.id}"]`);
-        row?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        const node = findNodeById(store.data.threads || [], r.id);
+        let cursor = node;
+        while (cursor) {
+          cursor.collapsed = false;
+          const parentId = parentById.get(cursor.id);
+          cursor = parentId ? nodeById.get(parentId) : null;
+        }
+        renderThreads();
+        window.requestAnimationFrame(() => {
+          const row = document.querySelector(`.node[data-id="${r.id}"]`);
+          row?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        });
       } else {
         switchView('tasks');
-        tasksViewState.searchText = r.title;
+        tasksViewState.focusTaskId = r.id;
+        tasksViewState.searchText = '';
+        tasksViewState.showBlocked = true;
         saveTasksViewState();
         renderTasksPane();
+        window.requestAnimationFrame(() => {
+          let target = null;
+          try {
+            if (typeof CSS !== 'undefined' && typeof CSS.escape === 'function') {
+              target = document.querySelector(`.task[data-task-id="${CSS.escape(String(r.id))}"]`);
+            }
+          } catch {}
+          if (!target) {
+            target = Array.from(document.querySelectorAll('.task[data-task-id]')).find((row) => row.dataset?.taskId === String(r.id)) || null;
+          }
+          if (!target) return;
+          target.scrollIntoView({ behavior: 'smooth', block: 'center' });
+          target.classList.add('next-step-focus');
+          setTimeout(() => target.classList.remove('next-step-focus'), 1800);
+        });
       }
       box.hidden = true;
     });
@@ -4007,78 +4144,11 @@ function isElementOnScreen(node) {
 }
 
 function applyPendingSeriesReveal(entries) {
-  if (!pendingSeriesReveal || !Array.isArray(entries) || !entries.length) return entries;
-  const keys = (pendingSeriesReveal.nextKeys || []).filter(Boolean);
-  if (!keys.length) return entries;
-  const list = entries.slice();
-  const moved = [];
-  keys.forEach((k) => {
-    const idx = list.findIndex((e) => entryKey(e) === k);
-    if (idx < 0) return;
-    moved.push(list[idx]);
-    list.splice(idx, 1);
-  });
-  if (!moved.length) return entries;
-  const fromIndex = Math.max(0, Math.min(list.length, Number(pendingSeriesReveal.fromIndex) || 0));
-  list.splice(fromIndex, 0, ...moved);
-  return list;
+  return entries;
 }
 
 function buildSeriesDisplayEntries(entries) {
-  const out = [];
-  const seenTasks = new Set();
-  const list = entries || [];
-  list.forEach((ref) => {
-    if (ref.kind === 'subtask') {
-      if (seenTasks.has(ref.task.id)) return;
-      seenTasks.add(ref.task.id);
-      const activeRefs = list.filter((r) => r.kind === 'subtask' && r.task.id === ref.task.id);
-      const stats = seriesStats(ref.task);
-      const recentlyCompleted = (ref.task.series || [])
-        .filter((s) => !!s.completed)
-        .slice()
-        .sort((a, b) => {
-          const ta = parseIsoDate(a.completedAt)?.getTime() || 0;
-          const tb = parseIsoDate(b.completedAt)?.getTime() || 0;
-          return tb - ta;
-        })
-        .slice(0, 4);
-      out.push({
-        ...ref,
-        kind: 'series-flow',
-        series: stats,
-        activeSubtasks: activeRefs.map((r) => r.subtask),
-        activeEntryKeys: activeRefs.map((r) => entryKey(r)),
-        recentlyCompleted,
-      });
-      return;
-    }
-    if (ref.kind === 'series') {
-      if (seenTasks.has(ref.task.id)) return;
-      seenTasks.add(ref.task.id);
-      const stats = seriesStats(ref.task);
-      const recentlyCompleted = (ref.task.series || [])
-        .filter((s) => !!s.completed)
-        .slice()
-        .sort((a, b) => {
-          const ta = parseIsoDate(a.completedAt)?.getTime() || 0;
-          const tb = parseIsoDate(b.completedAt)?.getTime() || 0;
-          return tb - ta;
-        })
-        .slice(0, 4);
-      out.push({
-        ...ref,
-        kind: 'series-flow',
-        series: stats,
-        activeSubtasks: [],
-        activeEntryKeys: [],
-        recentlyCompleted,
-      });
-      return;
-    }
-    out.push(ref);
-  });
-  return out;
+  return entries || [];
 }
 
 function flushPendingSeriesRevealUi() {
@@ -4173,6 +4243,7 @@ function bindTasksStickyVisibility(stickyBar, filterPanel) {
 }
 
 function renderTasksPane() {
+  return renderTasksPaneV2();
   const root = $('#tasks-root');
   if (!root) {
     clearTasksStickyVisibilitySync();
@@ -5429,6 +5500,768 @@ function renderTasksPane() {
     root.append(makeTaskCard(ref));
   }
   flushPendingSeriesRevealUi();
+}
+
+function renderTasksPaneV2() {
+  const root = $('#tasks-root');
+  if (!root) {
+    clearTasksStickyVisibilitySync();
+    return;
+  }
+  clearTasksStickyVisibilitySync();
+  root.innerHTML = '';
+  root.classList.toggle('tasks-compact', !!tasksViewState.compactMode);
+
+  const now = new Date();
+  const changedRecurring = runRecurringTasks(now);
+  const changedArchive = applyArchivingRules(tasksViewState.archiveAfterDays, now);
+  if (changedRecurring || changedArchive) store.saveNow();
+
+  const depMap = allTaskRefMap();
+  const ctx = tasksViewState.currentContext === 'Any' ? null : tasksViewState.currentContext;
+  const locSet = new Set(uniqTags(tasksViewState.locationTags || []).map((tag) => tag.toLowerCase()));
+  const maxDur = normalizeDurationValue(tasksViewState.durationMax);
+  const priSet = new Set(normalizePriorityList(tasksViewState.priorityValues || []));
+  const textNeedle = (tasksViewState.searchText || '').trim().toLowerCase();
+  const allTaskRefs = flattenTaskRefs();
+
+  if (tasksViewState.threadNodeId && !nodeById.has(tasksViewState.threadNodeId)) {
+    tasksViewState.threadNodeId = null;
+    saveTasksViewState();
+  }
+  if (tasksViewState.focusTaskId && !allTaskRefs.some((ref) => ref.task.id === tasksViewState.focusTaskId)) {
+    tasksViewState.focusTaskId = null;
+    saveTasksViewState();
+  }
+
+  const threadNodeId = tasksViewState.threadNodeId || null;
+  const focusTaskId = tasksViewState.focusTaskId || null;
+  const refById = new Map(allTaskRefs.map((ref) => [ref.task.id, ref]));
+  const focusedTaskName = focusTaskId ? (refById.get(focusTaskId)?.task?.text || 'Task') : '';
+  const metaById = new Map();
+
+  allTaskRefs.forEach((ref) => {
+    const task = ref.task;
+    const done = !!task.completed;
+    metaById.set(task.id, {
+      done,
+      available: done ? true : isTaskAvailable(ref, now, ctx, depMap),
+      reason: availabilityReason(ref, now, ctx, depMap),
+      due: dueStatus(task, now),
+      archivedAt: task.archivedAt || null,
+    });
+  });
+
+  const matchesDirect = (ref) => {
+    const task = ref.task;
+    const meta = metaById.get(task.id);
+    const focusScope = !focusTaskId || task.id === focusTaskId || ref.ancestors.some((ancestor) => ancestor.id === focusTaskId);
+    const okThread = nodeInScope(ref.node, threadNodeId);
+    const okCtx = passesContext(task, ctx);
+    const okLoc = locSet.size === 0 || taskLocations(task).some((tag) => locSet.has(tag.toLowerCase()));
+    const dur = taskDurationMins(task);
+    const okTime = !maxDur || (dur != null && dur <= maxDur);
+    const okPriority = priSet.size === 0 || priSet.has(Number(task.priority || 3));
+    const okArchived = tasksViewState.showArchived ? true : !task.archivedAt;
+    const hay = [
+      task.text,
+      taskRefPath(ref),
+      (ref.ancestors || []).map((ancestor) => ancestor.text).join(' '),
+      taskLocations(task).join(' '),
+      (task.contexts || []).join(' '),
+    ].join(' ').toLowerCase();
+    const okSearch = !textNeedle || hay.includes(textNeedle);
+    const okAvailability = tasksViewState.showBlocked || meta.done || meta.available || !!focusTaskId;
+    return okThread && okCtx && okLoc && okTime && okPriority && okArchived && okSearch && focusScope && okAvailability;
+  };
+
+  const directMatchIds = new Set(allTaskRefs.filter(matchesDirect).map((ref) => ref.task.id));
+  const visibleById = new Map();
+  const markVisible = (task) => {
+    const childVisible = taskChildList(task).some((child) => markVisible(child));
+    const visible = directMatchIds.has(task.id) || childVisible;
+    visibleById.set(task.id, visible);
+    return visible;
+  };
+  flattenNodes(store.data.threads || []).forEach((node) => {
+    if (!isNodePathEnabled(node)) return;
+    (node.tasks || []).forEach((task) => markVisible(task));
+  });
+
+  const visibleRefs = allTaskRefs.filter((ref) => visibleById.get(ref.task.id));
+  selectedTaskKeys = new Set([...selectedTaskKeys].filter((id) => visibleById.get(id)));
+
+  const stats = {
+    total: visibleRefs.length,
+    ready: visibleRefs.filter((ref) => {
+      const meta = metaById.get(ref.task.id);
+      return meta && !meta.done && meta.available;
+    }).length,
+    blocked: visibleRefs.filter((ref) => {
+      const meta = metaById.get(ref.task.id);
+      return meta && !meta.done && !meta.available;
+    }).length,
+    done: visibleRefs.filter((ref) => metaById.get(ref.task.id)?.done).length,
+    starred: visibleRefs.filter((ref) => !ref.task.completed && ref.task.starred).length,
+    urgent: visibleRefs.filter((ref) => {
+      const due = metaById.get(ref.task.id)?.due;
+      return !ref.task.completed && (due?.state === 'overdue' || due?.state === 'soon');
+    }).length,
+  };
+
+  const sorters = {
+    priority: (a, b) => {
+      const pa = Number(a.task.priority) || 3;
+      const pb = Number(b.task.priority) || 3;
+      if (pa !== pb) return pa - pb;
+      const aa = metaById.get(a.task.id)?.available ? 0 : 1;
+      const bb = metaById.get(b.task.id)?.available ? 0 : 1;
+      if (aa !== bb) return aa - bb;
+      const da = parseIsoDate(a.task.dueAt)?.getTime() ?? Infinity;
+      const db = parseIsoDate(b.task.dueAt)?.getTime() ?? Infinity;
+      return da - db;
+    },
+    due: (a, b) => {
+      const da = parseIsoDate(a.task.dueAt)?.getTime() ?? Infinity;
+      const db = parseIsoDate(b.task.dueAt)?.getTime() ?? Infinity;
+      if (da !== db) return da - db;
+      return (Number(a.task.priority) || 3) - (Number(b.task.priority) || 3);
+    },
+    path: (a, b) => {
+      const cmp = taskRefPath(a).localeCompare(taskRefPath(b));
+      if (cmp !== 0) return cmp;
+      return (Number(a.task.priority) || 3) - (Number(b.task.priority) || 3);
+    },
+  };
+  const sortBy = ['priority', 'due', 'path'].includes(tasksViewState.sortBy) ? tasksViewState.sortBy : 'priority';
+  const sortRefs = (refs) => refs.slice().sort(sorters[sortBy]);
+  const visibleChildRefs = (task) => taskChildList(task).map((child) => refById.get(child.id)).filter((ref) => ref && visibleById.get(ref.task.id));
+  const childSummary = (task) => {
+    const children = taskChildList(task);
+    if (!children.length) return '';
+    const ready = children.filter((child) => {
+      const meta = metaById.get(child.id);
+      return meta && !meta.done && meta.available;
+    }).length;
+    const blocked = children.filter((child) => {
+      const meta = metaById.get(child.id);
+      return meta && !meta.done && !meta.available;
+    }).length;
+    const starred = children.filter((child) => !child.completed && child.starred).length;
+    const parts = [`${children.length} subtask${children.length === 1 ? '' : 's'}`];
+    if (ready) parts.push(`${ready} ready`);
+    if (blocked) parts.push(`${blocked} blocked`);
+    if (starred) parts.push(`${starred} starred`);
+    if (taskChildMode(task) === 'sequential') {
+      const next = children.find((child) => !child.completed);
+      parts.push(next ? `Next: ${next.text || 'Task'}` : 'All done');
+    }
+    return parts.join(' • ');
+  };
+
+  const rerenderEverywhere = () => {
+    renderThreads();
+    if (!$('#review-stage').hidden) {
+      renderProgress();
+      renderStoryCard();
+    }
+    renderTasksPane();
+  };
+  const openComposer = (kind, taskId) => {
+    taskComposerState = { kind, taskId };
+    renderTasksPane();
+  };
+  const closeComposer = () => {
+    taskComposerState = null;
+    renderTasksPane();
+  };
+  const appendComposer = (host, ref) => {
+    if (!taskComposerState || taskComposerState.taskId !== ref.task.id) return;
+    const kind = taskComposerState.kind;
+    const row = el('div', { class: 'task-compose-row' });
+    const input = el('input', { type: 'text', placeholder: kind === 'sibling' ? 'Add sibling task…' : 'Add subtask…' });
+    const addBtn = el('button', { class: 'btn primary', type: 'button' }, kind === 'sibling' ? 'Add sibling' : 'Add subtask');
+    const cancelBtn = el('button', { class: 'btn ghost', type: 'button' }, 'Cancel');
+    const commit = () => {
+      const text = input.value.trim();
+      if (!text) {
+        input.focus();
+        return;
+      }
+      const created = kind === 'sibling' ? addSiblingTask(ref.task.id, text) : addChildTask(ref.task.id, text);
+      if (!created) return;
+      taskComposerState = null;
+      store.saveNow();
+      rerenderEverywhere();
+      showToast(kind === 'sibling' ? 'Sibling task added' : 'Subtask added');
+    };
+    bindEnterToButton(input, addBtn);
+    addBtn.addEventListener('click', commit);
+    cancelBtn.addEventListener('click', closeComposer);
+    row.append(input, addBtn, cancelBtn);
+    host.append(row);
+    requestAnimationFrame(() => input.focus());
+  };
+
+  const makeTaskCard = (ref, opts = {}) => {
+    const task = ref.task;
+    const meta = metaById.get(task.id);
+    const depth = Number(ref.depth) || 0;
+    const item = el('div', {
+      class: `task task-tree-card${meta?.done ? ' completed' : ''}${depth ? ' nested-task-card' : ''}${opts.flat ? ' flat-task-card' : ''}`,
+      style: `border-left:6px solid ${ref.root?.color || 'var(--accent)'}`,
+      'data-task-id': task.id,
+    });
+    item.style.setProperty('--task-depth', String(depth));
+    if (meta?.due?.state === 'overdue') item.classList.add('due-overdue');
+    else if (meta?.due?.state === 'soon') item.classList.add('due-soon');
+    if (meta?.archivedAt) item.classList.add('archived');
+    if (task.starred) item.classList.add('is-starred');
+
+    const head = el('div', { class: 'task-tree-head' });
+    const titleGroup = el('div', { class: 'task-tree-title-group' });
+    const cb = el('input', { type: 'checkbox' });
+    cb.checked = !!meta?.done;
+    cb.addEventListener('change', () => {
+      if (taskHasChildren(task)) setTaskTreeCompleted(task, cb.checked);
+      else setTaskCompleted(task, cb.checked);
+      store.saveNow();
+      rerenderEverywhere();
+    });
+    titleGroup.append(cb);
+    if (taskHasChildren(task) && !opts.flat) {
+      const toggle = el('button', { class: 'btn ghost task-tree-toggle', type: 'button' }, collapsedTaskTrees.has(task.id) ? '▸' : '▾');
+      toggle.addEventListener('click', () => {
+        if (collapsedTaskTrees.has(task.id)) collapsedTaskTrees.delete(task.id);
+        else collapsedTaskTrees.add(task.id);
+        renderTasksPane();
+      });
+      titleGroup.append(toggle);
+    } else {
+      titleGroup.append(el('span', { class: 'task-tree-spacer', 'aria-hidden': 'true' }, ''));
+    }
+
+    const titleWrap = el('div', { class: 'task-tree-title-wrap' });
+    const titleInput = el('textarea', { class: 'task-title-input task-tree-title', rows: '1' });
+    initTaskTextInput(titleInput);
+    titleInput.value = task.text || '';
+    titleInput.addEventListener('change', () => {
+      const next = titleInput.value.trim();
+      if (!next) {
+        titleInput.value = task.text || '';
+        return;
+      }
+      task.text = next;
+      store.saveNow();
+      renderThreads();
+      if (!$('#review-stage').hidden) renderStoryCard();
+    });
+    titleWrap.append(titleInput);
+    if (!tasksViewState.compactMode) {
+      const infoParts = [];
+      const path = taskRefPath(ref);
+      if (path) infoParts.push(path);
+      if (!meta?.done && meta?.reason) infoParts.push(meta.reason);
+      if (!meta?.done && (meta?.due?.state === 'overdue' || meta?.due?.state === 'soon')) infoParts.push(meta.due.label);
+      const summary = childSummary(task);
+      if (summary) infoParts.push(summary);
+      if (infoParts.length) titleWrap.append(el('div', { class: 'task-tree-subline' }, infoParts.join(' • ')));
+    }
+    head.append(titleGroup, titleWrap);
+
+    const tools = el('div', { class: 'task-tree-tools' });
+    if (tasksViewState.selectionMode) {
+      const pick = el('input', { type: 'checkbox', title: 'Select task' });
+      pick.checked = selectedTaskKeys.has(task.id);
+      pick.addEventListener('change', () => {
+        if (pick.checked) selectedTaskKeys.add(task.id);
+        else selectedTaskKeys.delete(task.id);
+        item.classList.toggle('selected', pick.checked);
+      });
+      tools.append(pick);
+      item.classList.toggle('selected', pick.checked);
+    }
+    const starBtn = el('button', {
+      class: `task-icon-btn${task.starred ? ' active star' : ''}`,
+      type: 'button',
+      title: task.starred ? 'Remove star' : 'Star task',
+      'aria-label': task.starred ? 'Remove star' : 'Star task',
+    }, task.starred ? '★' : '☆');
+    starBtn.addEventListener('click', () => {
+      task.starred = !task.starred;
+      store.saveNow();
+      renderTasksPane();
+    });
+    const pauseBtn = el('button', {
+      class: `task-icon-btn${taskHasPauseState(task, depMap) ? ' active pause' : ''}`,
+      type: 'button',
+      title: 'Pause and dependencies',
+      'aria-label': 'Pause and dependencies',
+    }, '⏸');
+    pauseBtn.addEventListener('click', () => {
+      const next = !isPausePanelOpen('tasks', task.id);
+      setPausePanelOpen('tasks', task.id, next);
+      if (next) setTagPanelOpen('tasks', task.id, false);
+      renderTasksPane();
+    });
+    const detailBtn = el('button', {
+      class: `task-icon-btn${isTagPanelOpen('tasks', task.id) ? ' active' : ''}`,
+      type: 'button',
+      title: 'Task details',
+      'aria-label': 'Task details',
+    }, '⋯');
+    detailBtn.addEventListener('click', () => {
+      const next = !isTagPanelOpen('tasks', task.id);
+      setTagPanelOpen('tasks', task.id, next);
+      if (next) setPausePanelOpen('tasks', task.id, false);
+      renderTasksPane();
+    });
+    tools.append(starBtn, pauseBtn, detailBtn);
+    head.append(tools);
+    item.append(head);
+
+    const badgeRow = buildTaskStateBadges(task, { now, depMap, done: meta?.done, ref });
+    if (taskHasChildren(task)) {
+      badgeRow.append(el('span', { class: 'pill task-state-chip tag' }, taskChildMode(task) === 'sequential' ? 'Sequential' : 'Parallel'));
+    }
+    if (task.starred) badgeRow.append(el('span', { class: 'pill task-state-chip warn' }, 'Starred'));
+    item.append(badgeRow);
+
+    if (!tasksViewState.compactMode && !opts.flat) {
+      item.append(buildTaskMetaRow(task, { variant: 'compact', includePriority: false }));
+    }
+
+    if (!opts.flat) {
+      const actionRow = el('div', { class: 'task-tree-action-row' });
+      const addChildBtn = el('button', { class: 'btn ghost btn-lite', type: 'button' }, '+ Add subtask');
+      addChildBtn.addEventListener('click', () => openComposer('child', task.id));
+      actionRow.append(addChildBtn);
+      if (ref.parentTask) {
+        const addSiblingBtn = el('button', { class: 'btn ghost btn-lite', type: 'button' }, '+ Add sibling');
+        addSiblingBtn.addEventListener('click', () => openComposer('sibling', task.id));
+        actionRow.append(addSiblingBtn);
+      }
+      const deleteBtn = el('button', { class: 'btn ghost danger btn-lite', type: 'button' }, 'Delete');
+      deleteBtn.addEventListener('click', () => {
+        removeTaskById(task.id);
+        if (tasksViewState.focusTaskId === task.id) tasksViewState.focusTaskId = null;
+        store.saveNow();
+        rerenderEverywhere();
+        showToast('Task removed');
+      });
+      actionRow.append(deleteBtn);
+      item.append(actionRow);
+    }
+
+    if (isPausePanelOpen('tasks', task.id)) item.append(buildPauseControls(task.id, () => renderTasksPane()));
+    if (isTagPanelOpen('tasks', task.id)) item.append(buildAvailabilityControls(ref.node.id, task.id, () => renderTasksPane()));
+
+    if (!opts.flat) {
+      appendComposer(item, ref);
+      const children = visibleChildRefs(task);
+      const forceOpen = !!focusTaskId && children.some((childRef) => childRef.task.id === focusTaskId || childRef.ancestors.some((ancestor) => ancestor.id === focusTaskId));
+      const expanded = taskHasChildren(task) && (!collapsedTaskTrees.has(task.id) || forceOpen || !!tasksViewState.searchText);
+      if (children.length && expanded) {
+        const kids = el('div', { class: 'task-tree-children' });
+        children.forEach((childRef) => kids.append(makeTaskCard(childRef)));
+        item.append(kids);
+      }
+    }
+
+    if (meta?.done) item.classList.add('status-completed');
+    else if (meta?.available) item.classList.add('status-available');
+    else item.classList.add('status-blocked');
+    return item;
+  };
+
+  const controls = $('#tasks-controls');
+  if (controls) {
+    controls.innerHTML = '';
+    controls.classList.toggle('compact', !!tasksViewState.compactMode);
+    const buildGroup = (labelText, contentEl) => {
+      const group = el('div', { class: 'filter-group' });
+      group.append(el('div', { class: 'filter-label' }, labelText));
+      group.append(contentEl);
+      return group;
+    };
+    const metric = (label, value, cls = '') => {
+      const card = el('div', { class: `tasks-metric${cls ? ` ${cls}` : ''}` });
+      card.append(el('div', { class: 'tasks-metric-value' }, String(value)));
+      card.append(el('div', { class: 'tasks-metric-label' }, label));
+      return card;
+    };
+    const resetAllFilters = () => {
+      tasksViewState.threadNodeId = null;
+      tasksViewState.currentContext = 'Any';
+      tasksViewState.locationTags = [];
+      tasksViewState.durationMax = null;
+      tasksViewState.priorityValues = [];
+      tasksViewState.focusTaskId = null;
+      tasksViewState.showBlocked = false;
+      tasksViewState.searchText = '';
+      tasksViewState.showArchived = false;
+      tasksViewState.sortBy = 'priority';
+      tasksViewState.compactMode = false;
+      tasksViewState.selectionMode = false;
+      selectedTaskKeys = new Set();
+    };
+    const score = gamificationSummary(now);
+    const statusPanel = el('section', { class: 'tasks-status-panel' });
+    const scorePanel = el('div', { class: `points-panel${score.points >= score.goal ? ' complete' : ''}` });
+    const scoreHead = el('div', { class: 'points-head' });
+    scoreHead.append(el('div', { class: 'points-title' }, 'Daily Points'), el('div', { class: 'points-value' }, `${score.points}/${score.goal}`));
+    const scoreMeta = score.remaining
+      ? `${score.remaining} to goal • Streak ${score.streak} day${score.streak === 1 ? '' : 's'}`
+      : `Goal reached • Streak ${score.streak} day${score.streak === 1 ? '' : 's'}`;
+    const scoreSub = el('div', { class: 'points-meta' }, `${scoreMeta} • Goal days ${score.goalDays}`);
+    const scoreBar = el('div', { class: 'points-bar', role: 'progressbar', 'aria-valuemin': '0', 'aria-valuemax': String(score.goal), 'aria-valuenow': String(score.points) });
+    const scoreFill = el('div', { class: 'points-fill' });
+    scoreFill.style.width = `${score.pct}%`;
+    scoreBar.append(scoreFill);
+    const metricsSummary = el('div', { class: 'tasks-summary' });
+    metricsSummary.append(
+      metric('Visible', stats.total),
+      metric('Ready', stats.ready, 'good'),
+      metric('Blocked', stats.blocked, stats.blocked ? 'warn' : ''),
+      metric('Starred', stats.starred, stats.starred ? 'good' : ''),
+      metric('Urgent', stats.urgent, stats.urgent ? 'warn' : ''),
+      metric('Done', stats.done)
+    );
+    scorePanel.append(scoreHead, scoreSub, scoreBar, metricsSummary);
+    statusPanel.append(scorePanel);
+    controls.append(statusPanel);
+
+    const filterPanel = el('section', { class: 'tasks-filter-panel' });
+    const searchRow = el('div', { class: 'filter-row' });
+    const searchInput = el('input', { type: 'search', placeholder: 'Search within tasks…' });
+    searchInput.value = tasksViewState.searchText || '';
+    searchInput.addEventListener('input', () => {
+      tasksViewState.searchText = searchInput.value;
+      saveTasksViewState();
+      renderTasksPane();
+    });
+    const resetBtn = el('button', { class: 'btn ghost', type: 'button' }, 'Reset Filters');
+    resetBtn.addEventListener('click', () => {
+      resetAllFilters();
+      saveTasksViewState();
+      renderTasksPane();
+    });
+    searchRow.append(searchInput, resetBtn);
+    filterPanel.append(buildGroup('Search', searchRow));
+
+    const sortRow = el('div', { class: 'filter-row' });
+    [['priority', 'Priority'], ['due', 'Due'], ['path', 'Path']].forEach(([key, label]) => {
+      const btn = el('button', { class: `chip toggle${tasksViewState.sortBy === key ? ' active' : ''}`, type: 'button' }, label);
+      btn.addEventListener('click', () => {
+        tasksViewState.sortBy = key;
+        saveTasksViewState();
+        renderTasksPane();
+      });
+      sortRow.append(btn);
+    });
+    filterPanel.append(buildGroup('Sort', sortRow));
+
+    const quickRow = el('div', { class: 'filter-row' });
+    const mkToggle = (label, checked, onChange) => {
+      const wrap = el('label', { class: 'filter-toggle' });
+      const input = el('input', { type: 'checkbox' });
+      input.checked = checked;
+      input.addEventListener('change', () => onChange(input.checked));
+      wrap.append(input, document.createTextNode(` ${label}`));
+      return wrap;
+    };
+    quickRow.append(
+      mkToggle('Show blocked', !!tasksViewState.showBlocked, (value) => {
+        tasksViewState.showBlocked = value;
+        saveTasksViewState();
+        renderTasksPane();
+      }),
+      mkToggle('Show archived', !!tasksViewState.showArchived, (value) => {
+        tasksViewState.showArchived = value;
+        saveTasksViewState();
+        renderTasksPane();
+      }),
+      mkToggle('Compact', !!tasksViewState.compactMode, (value) => {
+        tasksViewState.compactMode = value;
+        saveTasksViewState();
+        renderTasksPane();
+      }),
+      mkToggle('Select mode', !!tasksViewState.selectionMode, (value) => {
+        tasksViewState.selectionMode = value;
+        if (!value) selectedTaskKeys = new Set();
+        renderTasksPane();
+      })
+    );
+    filterPanel.append(buildGroup('View', quickRow));
+
+    const advanced = el('details', { class: 'tasks-more-filters' });
+    const advancedSummary = el('summary', {}, 'More filters');
+    const advancedBody = el('div', { class: 'tasks-more-filters-body' });
+    advanced.append(advancedSummary, advancedBody);
+
+    const threadRow = el('div', { class: 'filter-row' });
+    const threadSel = el('select', { class: 'select-sm' });
+    threadSel.append(el('option', { value: '' }, 'Any thread'));
+    allThreadNodes().filter(isNodePathEnabled).forEach((node) => {
+      threadSel.append(el('option', { value: node.id }, nodePath(node)));
+    });
+    threadSel.value = threadNodeId || '';
+    threadSel.addEventListener('change', () => {
+      tasksViewState.threadNodeId = threadSel.value || null;
+      saveTasksViewState();
+      renderTasksPane();
+    });
+    threadRow.append(threadSel);
+    advancedBody.append(buildGroup('Thread', threadRow));
+
+    const ctxs = allContexts();
+    if (ctxs.length) {
+      const ctxRow = el('div', { class: 'filter-row' });
+      const sel = el('select', { class: 'select-sm' });
+      sel.append(el('option', { value: 'Any' }, 'Any'));
+      ctxs.forEach((name) => sel.append(el('option', { value: name }, name)));
+      sel.value = tasksViewState.currentContext || 'Any';
+      sel.addEventListener('change', () => {
+        tasksViewState.currentContext = sel.value;
+        saveTasksViewState();
+        renderTasksPane();
+      });
+      ctxRow.append(sel);
+      advancedBody.append(buildGroup('Context', ctxRow));
+    }
+
+    const activePriorities = normalizePriorityList(tasksViewState.priorityValues || []);
+    const priRow = el('div', { class: 'filter-row' });
+    const priAny = el('button', { class: `chip toggle${activePriorities.length ? '' : ' active'}`, type: 'button' }, 'Any');
+    priAny.addEventListener('click', () => {
+      tasksViewState.priorityValues = [];
+      saveTasksViewState();
+      renderTasksPane();
+    });
+    priRow.append(priAny);
+    PRIORITY_PRESETS.forEach((priority) => {
+      const active = activePriorities.includes(priority);
+      const btn = el('button', { class: `chip toggle${active ? ' active' : ''}`, type: 'button' }, `P${priority}`);
+      btn.addEventListener('click', () => {
+        const next = normalizePriorityList(tasksViewState.priorityValues || []);
+        const idx = next.indexOf(priority);
+        if (idx >= 0) next.splice(idx, 1);
+        else next.push(priority);
+        tasksViewState.priorityValues = normalizePriorityList(next);
+        saveTasksViewState();
+        renderTasksPane();
+      });
+      priRow.append(btn);
+    });
+    advancedBody.append(buildGroup('Priority', priRow));
+
+    const activeLocs = uniqTags(tasksViewState.locationTags || []);
+    const locRow = el('div', { class: 'filter-row' });
+    const locAny = el('button', { class: `chip toggle${activeLocs.length ? '' : ' active'}`, type: 'button' }, 'Any');
+    locAny.addEventListener('click', () => {
+      tasksViewState.locationTags = [];
+      saveTasksViewState();
+      renderTasksPane();
+    });
+    locRow.append(locAny);
+    allLocations().forEach((loc) => {
+      const active = activeLocs.some((tag) => tag.toLowerCase() === loc.toLowerCase());
+      const btn = el('button', { class: `chip toggle${active ? ' active' : ''}`, type: 'button' }, loc);
+      btn.addEventListener('click', () => {
+        const next = uniqTags(tasksViewState.locationTags || []);
+        const idx = next.findIndex((tag) => tag.toLowerCase() === loc.toLowerCase());
+        if (idx >= 0) next.splice(idx, 1);
+        else next.push(loc);
+        tasksViewState.locationTags = next;
+        saveTasksViewState();
+        renderTasksPane();
+      });
+      locRow.append(btn);
+    });
+    advancedBody.append(buildGroup('Location', locRow));
+
+    const timeRow = el('div', { class: 'filter-row' });
+    const timeAny = el('button', { class: `chip toggle${maxDur ? '' : ' active'}`, type: 'button' }, 'Any');
+    timeAny.addEventListener('click', () => {
+      tasksViewState.durationMax = null;
+      saveTasksViewState();
+      renderTasksPane();
+    });
+    timeRow.append(timeAny);
+    allDurations().forEach((mins) => {
+      const active = maxDur === mins;
+      const btn = el('button', { class: `chip toggle${active ? ' active' : ''}`, type: 'button' }, formatDuration(mins) || `${mins}m`);
+      btn.addEventListener('click', () => {
+        tasksViewState.durationMax = active ? null : mins;
+        saveTasksViewState();
+        renderTasksPane();
+      });
+      timeRow.append(btn);
+    });
+    advancedBody.append(buildGroup('Time ≤', timeRow));
+
+    if (focusTaskId) {
+      const focusRow = el('div', { class: 'filter-row' });
+      const chip = el('button', { class: 'chip toggle active', type: 'button' }, `Focus: ${focusedTaskName}`);
+      chip.addEventListener('click', () => {
+        tasksViewState.focusTaskId = null;
+        saveTasksViewState();
+        renderTasksPane();
+      });
+      focusRow.append(chip);
+      advancedBody.append(buildGroup('Focus', focusRow));
+    }
+
+    if (tasksViewState.selectionMode) {
+      const selectedRefs = [...selectedTaskKeys].map((id) => refById.get(id)).filter(Boolean);
+      const bulkRow = el('div', { class: 'filter-row' });
+      bulkRow.append(el('span', { class: 'subtext' }, `${selectedRefs.length} selected`));
+      const doneBtn = el('button', { class: 'btn ghost', type: 'button' }, 'Complete');
+      doneBtn.addEventListener('click', () => {
+        selectedRefs.forEach((ref) => {
+          if (taskHasChildren(ref.task)) setTaskTreeCompleted(ref.task, true);
+          else setTaskCompleted(ref.task, true);
+        });
+        selectedTaskKeys = new Set();
+        store.saveNow();
+        rerenderEverywhere();
+        showToast('Bulk complete applied');
+      });
+      const starBtn = el('button', { class: 'btn ghost', type: 'button' }, 'Star');
+      starBtn.addEventListener('click', () => {
+        selectedRefs.forEach((ref) => { ref.task.starred = true; });
+        store.saveNow();
+        renderTasksPane();
+      });
+      const priSel = el('select', { class: 'select-sm' });
+      [1, 2, 3, 4, 5].forEach((priority) => priSel.append(el('option', { value: String(priority) }, `P${priority}`)));
+      const priBtn = el('button', { class: 'btn ghost', type: 'button' }, 'Set priority');
+      priBtn.addEventListener('click', () => {
+        selectedRefs.forEach((ref) => { ref.task.priority = Number(priSel.value); });
+        store.saveNow();
+        rerenderEverywhere();
+      });
+      const delBtn = el('button', { class: 'btn ghost danger', type: 'button' }, 'Remove');
+      delBtn.addEventListener('click', () => {
+        selectedRefs.forEach((ref) => removeTaskById(ref.task.id));
+        selectedTaskKeys = new Set();
+        store.saveNow();
+        rerenderEverywhere();
+        showToast('Selected tasks removed');
+      });
+      bulkRow.append(doneBtn, starBtn, priSel, priBtn, delBtn);
+      advancedBody.append(buildGroup('Selection', bulkRow));
+    }
+
+    filterPanel.append(advanced);
+    controls.append(filterPanel);
+  }
+
+  const makeFollowUpCard = (ref) => {
+    const task = ref.task;
+    const follow = followUpStatus(task, now);
+    const item = el('div', {
+      class: `task followup-task${follow.state === 'overdue' ? ' due-overdue' : ''}`,
+      style: `border-left:6px solid ${ref.root?.color || 'var(--accent)'}`,
+      'data-task-id': task.id,
+    });
+    const pin = el('div');
+    pin.append(el('span', { class: `pill ${follow.state === 'overdue' ? 'warn' : 'tag'}` }, follow.label || 'Follow up'));
+    const main = el('div', { class: 'task-main' });
+    main.append(
+      el('div', { class: 'task-title' }, task.text || 'Untitled task'),
+      el('div', { class: 'ctx' }, `${taskRefPath(ref)}${availabilityReason(ref, now, null, depMap) ? ` • ${availabilityReason(ref, now, null, depMap)}` : ''}`)
+    );
+    const actions = el('div', { class: 'meta task-actions followup-actions' });
+    const nudgeBtn = el('button', { class: 'btn ghost btn-lite', type: 'button' }, 'Nudge +2d');
+    nudgeBtn.addEventListener('click', () => {
+      nudgeFollowUp(task, 2, now);
+      store.saveNow();
+      renderTasksPane();
+    });
+    const clearWaitBtn = el('button', { class: 'btn ghost btn-lite', type: 'button' }, 'Clear waiting');
+    clearWaitBtn.disabled = !(task.waitingOn && task.waitingOn.trim());
+    clearWaitBtn.addEventListener('click', () => {
+      task.waitingOn = '';
+      store.saveNow();
+      renderTasksPane();
+    });
+    const openBtn = el('button', { class: 'btn ghost btn-lite', type: 'button' }, 'Open');
+    openBtn.addEventListener('click', () => {
+      tasksViewState.focusTaskId = task.id;
+      tasksViewState.showBlocked = true;
+      saveTasksViewState();
+      renderTasksPane();
+    });
+    actions.append(nudgeBtn, clearWaitBtn, openBtn);
+    item.append(pin, main, actions);
+    return item;
+  };
+
+  const followUpEntries = allTaskRefs
+    .map((ref) => {
+      const task = ref.task;
+      if (!nodeInScope(ref.node, threadNodeId)) return null;
+      if (!task || task.completed) return null;
+      if (!tasksViewState.showArchived && task.archivedAt) return null;
+      if (!taskHasPauseState(task, depMap)) return null;
+      const follow = followUpStatus(task, now);
+      if (follow.state !== 'overdue' && follow.state !== 'today') return null;
+      return { ...ref, follow };
+    })
+    .filter(Boolean)
+    .sort((a, b) => {
+      const fa = parseIsoDate(a.task.followUpAt)?.getTime() ?? Infinity;
+      const fb = parseIsoDate(b.task.followUpAt)?.getTime() ?? Infinity;
+      if (fa !== fb) return fa - fb;
+      return (Number(a.task.priority) || 3) - (Number(b.task.priority) || 3);
+    });
+
+  const movingEntries = movingTaskEntries('tasks');
+  if (movingEntries.length) {
+    const movingSection = el('section', { class: 'task-section task-section-moving' });
+    const head = el('div', { class: 'task-section-head' });
+    head.append(el('h3', {}, 'Moving Tasks'));
+    head.append(el('span', { class: 'pill warn' }, `${movingEntries.length}`));
+    movingSection.append(head);
+    movingEntries.forEach((entry) => movingSection.append(buildMovingTaskNotice(entry)));
+    root.append(movingSection);
+  }
+
+  if (followUpEntries.length) {
+    const followSection = el('section', { class: 'task-section task-section-followups' });
+    const head = el('div', { class: 'task-section-head' });
+    head.append(el('h3', {}, 'Follow-Ups Due'));
+    head.append(el('span', { class: 'pill warn' }, `${followUpEntries.length}`));
+    followSection.append(head);
+    followUpEntries.forEach((entry) => followSection.append(makeFollowUpCard(entry)));
+    root.append(followSection);
+  }
+
+  const appendSection = (title, refs, opts = {}) => {
+    if (!refs.length) return;
+    const section = el('section', { class: `task-section${opts.extraClass ? ` ${opts.extraClass}` : ''}` });
+    const head = el('div', { class: 'task-section-head' });
+    head.append(el('h3', {}, title));
+    head.append(el('span', { class: 'pill tag' }, `${refs.length}`));
+    section.append(head);
+    refs.forEach((ref) => section.append(makeTaskCard(ref, opts.cardOpts || {})));
+    root.append(section);
+  };
+
+  const topLevelRefs = sortRefs(allTaskRefs.filter((ref) => ref.depth === 0 && visibleById.get(ref.task.id)));
+  const openRoots = topLevelRefs.filter((ref) => !ref.task.completed);
+  const doneRoots = topLevelRefs.filter((ref) => ref.task.completed);
+  const starredRefs = sortRefs(visibleRefs.filter((ref) => !ref.task.completed && ref.task.starred));
+
+  if (starredRefs.length) appendSection('Starred', starredRefs, { extraClass: 'task-section-starred', cardOpts: { flat: true } });
+  if (openRoots.length) appendSection(tasksViewState.showBlocked ? 'Open Tasks' : 'Ready Tasks', openRoots);
+  if (doneRoots.length) appendSection('Completed', doneRoots);
+
+  if (!openRoots.length && !doneRoots.length && !movingEntries.length && !followUpEntries.length) {
+    const msg = stats.total ? 'No tasks in the current view.' : 'No tasks match the current filters.';
+    root.append(el('div', { class: 'empty' }, msg));
+  }
 }
 
 if (typeof document !== 'undefined') {
